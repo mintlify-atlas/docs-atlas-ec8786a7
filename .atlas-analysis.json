@@ -1,0 +1,91 @@
+{
+  "projectType": "saas",
+  "projectName": "Manizales de Pie",
+  "projectDescription": "A real-time earthquake relief coordination map for Manizales and Villamaría, Colombia, helping volunteers find where help is needed today.",
+  "theme": "almond",
+  "primaryColor": "#6b9cfb",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": ["introduction", "quickstart"]
+          },
+          {
+            "group": "Architecture",
+            "pages": ["architecture/overview", "architecture/data-layer", "architecture/database-schema"]
+          }
+        ]
+      },
+      {
+        "tab": "Features",
+        "groups": [
+          {
+            "group": "The Map",
+            "pages": ["features/map", "features/neighborhoods", "features/reporting"]
+          },
+          {
+            "group": "Entities",
+            "pages": ["features/sites", "features/work-orders", "features/animals", "features/resource-offers"]
+          },
+          {
+            "group": "Users & Roles",
+            "pages": ["features/auth", "features/roles-and-curation"]
+          }
+        ]
+      },
+      {
+        "tab": "Self-Hosting",
+        "groups": [
+          {
+            "group": "Setup",
+            "pages": ["self-hosting/prerequisites", "self-hosting/environment", "self-hosting/database"]
+          },
+          {
+            "group": "Operations",
+            "pages": ["self-hosting/seed-data", "self-hosting/deployment"]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Real-time interactive map with MapLibre GL, showing aid sites, work orders, animals, and resource offers",
+    "Neighborhood-aware data — every pin is automatically assigned to one of Manizales's 114 official barrios via PostGIS trigger",
+    "Anonymous public reporting — anyone can report a need or site without an account",
+    "Work order lifecycle — community-driven status derived from a thread of updates (on_the_way, helped, still_needed, not_real)",
+    "Unified panel with category chips (Todo, Sitios, Mascotas, Servicios, Necesidades) replacing multi-route navigation",
+    "Confidence system — unconfirmed reports are shown but visually demoted rather than hidden",
+    "Google Sign-In for curator and contributor roles, required only for actions that commit others",
+    "Structured logging with automatic redaction of phone numbers and addresses",
+    "Row-level security via Supabase + PostGIS, with security_invoker views to prevent RLS bypass",
+    "Open-publication model — items go live immediately and are moderated down by curators"
+  ],
+  "publicApiSurface": [
+    "SiteDAL.public() — read published sites with neighborhood, status, items, and confirmation count",
+    "SiteDAL.create() — authenticated DAL for curator-level site creation",
+    "SiteDAL.listPublished() — list sites visible to current role",
+    "SiteDAL.findNearby() — proximity check using PostGIS, called for duplicate detection",
+    "WorkOrderDAL.public() — read published work orders with attendee/helped counts and thread",
+    "WorkOrderDAL.create() — create anonymous work order report",
+    "WorkOrderDAL.postUpdate() — post an update entry (on_the_way, helped, still_needed, not_real)",
+    "ResourceOfferDAL.public() — read published resource offers",
+    "ResourceOfferDAL.create() — create anonymous resource offer",
+    "AnimalDAL.public() — read published animal reports",
+    "AnimalDAL.create() — create anonymous animal report",
+    "NeighborhoodDAL — list neighborhoods for barrio picker and panel filtering",
+    "createSiteSchema / createWorkOrderSchema / createResourceOfferSchema / createAnimalSchema — Zod input validation",
+    "siteSchema / workOrderSchema / resourceOfferSchema / animalSchema — Zod output DTOs",
+    "canRelocate() — pure policy predicate for pin-move authorization",
+    "canEditSite() / canEditWorkOrder() / canEditResourceOffer() — pure policy predicates",
+    "freshness() — label helper computing staleness from confirmed_at",
+    "confidence() — label helper computing confirmation level from confirmedCount",
+    "workOrderRollup() — derives WorkOrderRollup from status + reopened flag",
+    "SITE_TYPE_LABEL / SITE_STATUS_LABEL / WORK_ORDER_CATEGORY_LABEL / RESOURCE_TYPE_LABEL — Spanish UI label maps",
+    "lib/tabs.ts PanelChip type — union of chip identifiers driving the unified panel"
+  ]
+}

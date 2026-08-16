@@ -1,0 +1,103 @@
+---
+title: "Deploying Manizales de Pie to Vercel"
+sidebarTitle: "Deployment"
+description: "Deploy Manizales de Pie to Vercel in minutes. Connect the repo, set environment variables, configure Supabase Auth redirect URLs, and go live."
+---
+
+Manizales de Pie is designed for Vercel deployment. The `next.config.ts` is Vercel-aware, `proxy.ts` runs in Node runtime rather than the edge runtime, and the build output is a standard Next.js application. There is no custom server, no external build step, and no container to manage — Vercel's default Next.js preset handles everything.
+
+## Vercel deployment
+
+<Steps>
+  <Step title="Import the repository">
+    In the Vercel dashboard, click **Add New Project** and import from GitHub. Use the `astrxnomo/manizalesdepie` repository, or your own fork if you have made local changes. Vercel will detect the Next.js framework automatically — accept the defaults.
+  </Step>
+
+  <Step title="Set environment variables">
+    Before the first deploy, add all required environment variables under **Project Settings → Environment Variables**:
+
+    | Variable | Description |
+    |---|---|
+    | `NEXT_PUBLIC_SUPABASE_URL` | Your Supabase project URL (from Project Settings → API) |
+    | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | The publishable (anon) key |
+    | `SUPABASE_SECRET_KEY` | The secret (service role) key — server-only, never exposed to the browser |
+    | `NEXT_PUBLIC_SITE_URL` | Your Vercel deployment URL, e.g. `https://manizales-de-pie.vercel.app` |
+    | `NEXT_PUBLIC_CURATOR_WHATSAPP` | *(Optional)* The curator contact number, digits only with country code (e.g. `573001234567` for Colombia) |
+
+    `lib/env.ts` validates every variable at load time. A missing required variable fails the build with a clear message rather than surfacing as a runtime null.
+  </Step>
+
+  <Step title="Deploy">
+    Click **Deploy**. Vercel runs `npm run build`, which validates environment variables, compiles the application, and runs the Next.js build pipeline. A successful build produces a standard Next.js output; no additional configuration is required.
+  </Step>
+
+  <Step title="Update Supabase Auth redirect URLs">
+    In your Supabase project, go to **Authentication → URL Configuration** and make two changes:
+
+    1. Set **Site URL** to your production domain (e.g. `https://manizales-de-pie.vercel.app`).
+    2. Add `https://<your-domain>/auth/callback` to the **Redirect URLs** allowlist.
+
+    Without the redirect URL, Google OAuth logins will fail after the provider redirects back to your app.
+  </Step>
+
+  <Step title="Assign the first curator">
+    The first user to sign in with Google will have the default `viewer` role. Promote them to curator by connecting to your Supabase database and running:
+
+    ```sql
+    UPDATE profile SET role = 'curator' WHERE id = '<uuid-from-auth.users>';
+    ```
+
+    The UUID is the user's `id` in the `auth.users` table, visible in **Authentication → Users** in the Supabase dashboard. A curator can approve, reject, and publish seed data rows from the `/admin` queue.
+  </Step>
+</Steps>
+
+## Build commands
+
+From `package.json`, the available scripts are:
+
+```bash
+npm run dev      # development server (Next.js dev mode)
+npm run build    # production build with environment variable validation
+npm run start    # start the production server after a local build
+npm run lint     # ESLint — enforces layer boundaries between app/, data/, and lib/
+```
+
+## Content Security Policy
+
+`next.config.ts` sets a strict `Content-Security-Policy` header applied to every route. The policy allows connections to these external origins:
+
+- **Supabase project URL** — `https://*.supabase.co` and `wss://*.supabase.co` for PostgREST API calls and Realtime subscriptions.
+- **CARTO basemap tiles** — `https://basemaps.cartocdn.com` and `https://*.basemaps.cartocdn.com` for the map background layer.
+- **Cloudflare Turnstile** — `https://challenges.cloudflare.com` for bot protection on the public report form, when Turnstile keys are configured.
+- **Google OAuth** — `https://accounts.google.com` is covered via the `frame-src` and `script-src` directives to support the Google sign-in flow.
+- **Geocoding and aftershock data** — `https://nominatim.openstreetmap.org`, `https://overpass-api.de`, and `https://datos.sgc.gov.co` are listed in `connect-src`.
+
+<Warning>
+  Do not add `unsafe-inline` to `script-src` or `unsafe-eval` to any directive in production. Both are deliberately absent from the policy. In development, `unsafe-eval` is added automatically (by the `NODE_ENV` check in `next.config.ts`) because MapLibre GL compiles its style expressions with `new Function` — this is a dev-only exception and never reaches production.
+</Warning>
+
+## Custom domain
+
+To serve the app from your own domain, add it in **Vercel → Project → Domains**, then update three places:
+
+1. **`NEXT_PUBLIC_SITE_URL`** environment variable in Vercel — change it to `https://<your-domain>`.
+2. **Supabase Auth → URL Configuration → Site URL** — change to `https://<your-domain>`.
+3. **Supabase Auth → URL Configuration → Redirect URLs** — add `https://<your-domain>/auth/callback`.
+
+All three must match for OAuth and cookie-based session refresh to work correctly.
+
+## Known deployment gotchas
+
+The following issues are documented in `AGENTS.md` and are easy to hit during a first deploy or after a refactor:
+
+- **`next.config.ts` is only read at startup.** Changing `remotePatterns` (the list of allowed image hostnames for `next/image`) requires a full redeploy to take effect — a hot reload is not enough.
+
+- **`proxy.ts` replaces `middleware.ts` in Next.js 16.** The session-refresh file is named `proxy.ts` and exports `proxy`, not `middleware`. Having both `proxy.ts` and `middleware.ts` present is a build error. Supabase's own documentation still references `middleware.ts` — the pattern is correct, only the filename is outdated.
+
+- **Session refresh must happen before the response is committed.** The Supabase SSR helper calls `supabase.auth.getClaims()` early in `proxy.ts`, before any response headers are written. Calling it after the response is committed loses the refreshed cookie.
+
+- **`.next/dev/` can reference deleted routes after a refactor.** If TypeScript reports `TS2307` on a file that no longer exists, delete the `.next/dev/` directory and restart the dev server. The generated validator at `.next/dev/types/validator.ts` sometimes holds stale references to route files that have been removed.
+
+<Note>
+  Supabase's free tier supports two active projects per organization. If traffic spikes during an active emergency — which is exactly when it would — the free tier ceiling arrives at the worst possible moment. The documented escape route is upgrading to Supabase Pro. This is a known, accepted risk; plan for it before going live rather than during an incident.
+</Note>

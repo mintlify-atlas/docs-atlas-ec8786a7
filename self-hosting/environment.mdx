@@ -1,0 +1,106 @@
+---
+title: "Environment Variables for Manizales de Pie"
+sidebarTitle: "Environment"
+description: "Configure Manizales de Pie with five environment variables split between public (browser-safe) and server-only (secret). Missing variables fail the build by design."
+---
+
+All environment variables are validated at build time by `lib/env.ts` (public variables) and `lib/env.server.ts` (server-only secrets). Both use [Zod](https://zod.dev) to parse the values the moment the module loads. A missing or empty variable throws immediately with a descriptive error — failing the build rather than surfacing as a null pointer at 3 a.m. during an active emergency.
+
+## Public variables
+
+Variables prefixed `NEXT_PUBLIC_` are inlined into the browser bundle by Next.js. They are visible to anyone who inspects the page source. **Never put a secret in a `NEXT_PUBLIC_` variable.**
+
+<ParamField path="NEXT_PUBLIC_SUPABASE_URL" type="string" required>
+  The project URL from **Supabase Project Settings → API**.
+
+  Example: `https://lriozoktdpkggzywimek.supabase.co`
+
+  Used to initialize both the browser Supabase client and the server-side SSR client. Must be a valid URL — `lib/env.ts` validates it with `z.url()`.
+</ParamField>
+
+<ParamField path="NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY" type="string" required>
+  The publishable (anon) key from **Supabase Project Settings → API**.
+
+  This key is safe in the browser **because row-level security limits what it can read and write**. It cannot bypass RLS. Published rows are readable by the anon role; everything else is gated by policy.
+</ParamField>
+
+<ParamField path="NEXT_PUBLIC_SITE_URL" type="string" required>
+  The full URL of your deployment. Used for OAuth redirect URLs and OpenGraph metadata.
+
+  - Local development: `http://localhost:3000`
+  - Production: `https://manizales-de-pie.vercel.app` (or your custom domain)
+
+  Must be a valid URL — `lib/env.ts` validates it with `z.url()`.
+</ParamField>
+
+<ParamField path="NEXT_PUBLIC_CURATOR_WHATSAPP" type="string">
+  Phone number for curator contact. Digits only, with country code. No spaces, dashes, or plus signs.
+
+  Example: `573001234567` (where `57` is Colombia's country code)
+
+  Displayed across the app as the contact point for affected people and reporters. This is not validated as required — the app runs without it — but it should be set before the deployment is shared publicly.
+</ParamField>
+
+## Server-only variables
+
+Server-only variables are never prefixed `NEXT_PUBLIC_`. They live in `lib/env.server.ts`, which opens with `import "server-only"`. That import turns an accidental client-side import of this module into a **build error**, not a code review comment.
+
+<Warning>
+  `SUPABASE_SECRET_KEY` bypasses row-level security entirely. If this key ever
+  reaches the client bundle, any user can read and write any row in the database
+  — including `work_order_contact` rows that contain addresses of households
+  with damaged homes.
+
+  The ESLint rule in `eslint.config.mjs` blocks any import of
+  `@/lib/supabase/admin` or `@/lib/env.server` from `app/` or `components/`.
+  **Do not disable or work around that rule.**
+</Warning>
+
+<ParamField path="SUPABASE_SECRET_KEY" type="string" required>
+  The service role key from **Supabase Project Settings → API**.
+
+  Bypasses all RLS policies. Only `*.dal.ts` files may access this key, and only through the admin client at `lib/supabase/admin.ts`. No page, component, route handler, or server action may import it directly.
+</ParamField>
+
+## The env split in practice
+
+The two modules enforce the public/server split at the import graph level:
+
+```typescript lib/env.ts
+// Public — validated at module load, crashes loud if missing
+export const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+export const SUPABASE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+```
+
+```typescript lib/env.server.ts
+import "server-only";
+// Server — never reaches the browser bundle
+export const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY!;
+```
+
+`lib/env.ts` is safe to import anywhere — pages, components, the proxy, server actions. `lib/env.server.ts` may only be imported by server-side code in `lib/` and `data/`. The `server-only` package makes that boundary enforced rather than advisory.
+
+## Setting up .env.local
+
+Copy the example file and fill in each variable:
+
+```bash
+cp .env.example .env.local
+# Then fill in each variable
+```
+
+A complete `.env.local` template:
+
+```bash .env.local
+# ---- public: inlined into the browser bundle, never put a secret here -------
+NEXT_PUBLIC_SUPABASE_URL="https://your-project-ref.supabase.co"
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY="your-anon-key"
+NEXT_PUBLIC_SITE_URL="http://localhost:3000"
+NEXT_PUBLIC_CURATOR_WHATSAPP="573001234567"
+
+# ---- server only: never prefixed NEXT_PUBLIC_ -------------------------------
+# Bypasses row-level security. Only *.dal.ts may reach it.
+SUPABASE_SECRET_KEY="your-service-role-key"
+```
+
+All five variable names are exactly as shown. The build fails fast with a Zod validation error if `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `NEXT_PUBLIC_SITE_URL`, or `SUPABASE_SECRET_KEY` is missing or empty. `NEXT_PUBLIC_CURATOR_WHATSAPP` is optional and the app will run without it.

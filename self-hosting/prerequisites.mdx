@@ -1,0 +1,92 @@
+---
+title: "Prerequisites for Self-Hosting Manizales de Pie"
+sidebarTitle: "Prerequisites"
+description: "Before deploying Manizales de Pie, you need Node.js, a Supabase project with PostGIS, and a Google OAuth client. This page covers every required external dependency."
+---
+
+Manizales de Pie has no Docker image or Helm chart — it is a Next.js application deployed on Vercel backed by a Supabase project. Before you can run it, you need three external services: a Node.js runtime, a Supabase project, and a Google OAuth client. Optional hardening with Cloudflare Turnstile can be layered in once the core deployment is stable.
+
+## Node.js and package manager
+
+The app requires **Node.js 20 or later**, which matches the `@types/node: ^20` pin in `package.json`. The package manager is npm.
+
+The repository ships an `.npmrc` file at the root with a single line:
+
+```bash
+ignore-scripts=true
+```
+
+This setting prevents postinstall scripts from running automatically when you install dependencies. It is a security guardrail — a postinstall script is arbitrary code execution from a package author. Do not remove it. If a package genuinely requires a build step, run that step explicitly.
+
+## Supabase project
+
+The app has a hard dependency on a Supabase project. The database is not an optional backing store — it is the map. Every pin, every work order, and every realtime update flows through it.
+
+Your Supabase project must provide:
+
+<CardGroup cols={2}>
+  <Card title="PostgreSQL + PostGIS" icon="database">
+    The schema uses geography columns, spatial indexes, and the `st_dwithin` and `st_distance` functions. PostGIS must be enabled before the migration runs.
+  </Card>
+  <Card title="Row-level security" icon="shield">
+    Every table has RLS enabled. Published rows are readable by the `anon` role; mutations require `authenticated` or the service role. RLS is not optional and cannot be removed.
+  </Card>
+  <Card title="Authentication" icon="key">
+    Google is the only configured identity provider. Contributor and curator sign-in flow through Google OAuth; there is no password or SMS OTP path in this codebase.
+  </Card>
+  <Card title="Realtime" icon="bolt">
+    The map subscribes to live inserts and updates on published rows. Realtime must be enabled for the map to update without a page reload.
+  </Card>
+  <Card title="Storage" icon="image">
+    Animal report photos are stored in Supabase Storage and served through the CDN. The `next.config.ts` image optimizer is scoped to `*.supabase.co/storage/v1/object/public/**`.
+  </Card>
+</CardGroup>
+
+The **free tier is sufficient** for a single-city emergency deployment. The canonical production instance is the project **`manizales-de-pie`** (ref `lriozoktdpkggzywimek`, region `us-east-1`), held in the **Felipe Giraldo** org.
+
+<Note>
+  **Known risk, accepted at launch:** the free tier has a ceiling on compute and
+  realtime connections. If the app catches on during an active emergency, that
+  ceiling arrives at the worst possible moment. The escape route is upgrading to
+  **Supabase Pro**. This risk was weighed against the cost of Pro at launch and
+  accepted; if usage climbs, upgrade before the ceiling is hit.
+</Note>
+
+## Google OAuth client
+
+Google is the only identity provider. Curators and contributors sign in with a Google account; no SMS OTP, no passwords.
+
+<Steps>
+  <Step title="Create a Google Cloud project">
+    Go to [console.cloud.google.com](https://console.cloud.google.com), create a new project (or reuse an existing one), and enable the **Google+ API** (also listed as the People API in newer console views).
+  </Step>
+  <Step title="Create OAuth 2.0 credentials">
+    Navigate to **APIs & Services → Credentials → Create Credentials → OAuth client ID**. Choose **Web application** as the application type.
+  </Step>
+  <Step title="Add the redirect URI">
+    Under **Authorized redirect URIs**, add:
+    ```
+    https://<your-site>/auth/callback
+    ```
+    For local development, also add `http://localhost:3000/auth/callback`.
+  </Step>
+  <Step title="Copy credentials into Supabase">
+    In your Supabase dashboard, go to **Authentication → Providers → Google**. Enable the provider and paste in the client ID and client secret from the previous step.
+
+    The Supabase redirect URL shown in that panel (`https://<ref>.supabase.co/auth/v1/callback`) must also be added to the Google OAuth client's authorized redirect URIs.
+  </Step>
+</Steps>
+
+There is no phone-number verification anywhere in this project. A Google account gives traceability; a curator calls a listing before verifying it.
+
+## Vercel (recommended deployment target)
+
+The app is configured for Vercel. The `next.config.ts` sets security headers, image remote patterns, and allowed dev origins. Other Node.js-compatible platforms (Railway, Render, Fly.io) will work, but note one constraint:
+
+**`proxy.ts` must run in the Node runtime.** In Next.js 16, the middleware file is named `proxy.ts` (not `middleware.ts`) and its export is `proxy`. The runtime is Node and it cannot be configured to `edge`. Do not set `export const runtime = "edge"` on this file — the Supabase SSR cookie helpers require Node APIs.
+
+## Cloudflare Turnstile (optional)
+
+The public report forms are designed to accept a Cloudflare Turnstile site key for bot protection. The CSP in `next.config.ts` already names `challenges.cloudflare.com` in `script-src`, `connect-src`, and `frame-src`, so no config change is needed when the keys are ready.
+
+Turnstile keys are added as environment variables when the `/reportar` form ships. The app runs without them — Turnstile is not required to stand up the deployment.

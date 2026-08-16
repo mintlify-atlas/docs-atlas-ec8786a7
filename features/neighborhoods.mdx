@@ -1,0 +1,89 @@
+---
+title: "Neighborhood Boundaries: Barrio Filtering and PostGIS Assignment"
+sidebarTitle: "Neighborhoods"
+description: "Manizales de Pie displays 114 official barrios from the Alcaldía's GIS portal. Every pin is auto-assigned to a barrio via PostGIS trigger. Learn how filtering and boundary logic work."
+---
+
+Neighborhoods (barrios) are the primary geographic unit for filtering and coordination. The map shows 114 official barrio polygons sourced from the Alcaldía de Manizales's open GIS portal. Nobody in Manizales says "estoy en la Comuna 4" — they say "estoy en Chipre." An outline the reader cannot name is not orientation; barrios are the unit that maps to how people actually describe where they are.
+
+## Data source
+
+The polygon layer used is the official **"Límite de barrios"** (Acuerdo Municipal 589 de 2004), published by the Alcaldía de Manizales on their ArcGIS Open Data portal at `geodata-manizales-sigalcmzl.opendata.arcgis.com`.
+
+The script `scripts/fetch-barrios.mjs`:
+
+1. Downloads the feature layer from the Alcaldía portal
+2. Simplifies geometries for web delivery
+3. Writes `public/barrios.geojson` — the file the map loads at runtime
+4. Includes each barrio's **comuna** in the properties, so aggregating up to the commune level needs no second source
+
+**Name orthography:** Official names come in uppercase without accents (e.g., `FATIMA`). The script cross-references OpenStreetMap to restore correct orthography for **97 of 114 barrios**. The remaining 17 that couldn't be matched are title-cased programmatically. The combobox search in the report form folds accents at query time, so "fatima" still finds "Fátima" regardless.
+
+**Villamaría** is not included. Its municipality does not publish an equivalent barrio polygon layer, so across the river the neighborhood indicator reports nothing. A name that cannot be sourced is worse than no name during an emergency.
+
+`public/comunas.geojson` is kept separately — the commune is still the aggregation unit for choropleth analysis, and each barrio in `barrios.geojson` already carries its commune id.
+
+## Auto-assignment trigger
+
+Every pin is automatically assigned to a barrio by a **Postgres trigger**, not by application code:
+
+```sql
+-- Fires on INSERT or UPDATE of the location column
+-- on: site, volunteer_call, work_order, resource_offer
+set_neighborhood_from_location
+```
+
+The trigger calls a PostGIS point-in-polygon function to assign `neighborhood_id` from the pin's coordinates. This lives in the database rather than the DAL for a critical reason: **bulk imports via Supabase MCP also get correct barrio assignment**, without passing through the app at all. The real spreadsheets of debris cases and affected families will be loaded directly into Postgres — the trigger means they arrive correctly attributed.
+
+<Note>
+The barrio chosen in the picker (see **Barrio picker** below) does **not** get written to the database directly — it only positions the map camera. The `set_neighborhood_from_location` trigger re-derives the barrio from the final pin position. The picker copy says exactly this: "El mapa ya está en el barrio. Arrastra unos metros hasta el sitio exacto."
+</Note>
+
+## Panel filtering
+
+Clicking a barrio polygon on the map:
+
+1. **Flies the camera** to the barrio's bounding box (computed from the loaded GeoJSON, not from the click event's tile-clipped geometry)
+2. **Filters the panel** to show only items in that barrio
+3. **Keeps all pins visible** on the map — city-wide
+
+The barrio selection is passed as `?barrio=Chipre` in the URL when navigating to a report form. It lives in the URL rather than client state because the map and the report form live in different routes — this way it survives a reload and can be shared.
+
+Selecting a barrio again that is already selected **clears the filter**, returning the panel to the full city view.
+
+## Barrio picker
+
+The report form offers three ways to pick a barrio, implemented in `app/(map)/reportar/_components/barrio-picker.tsx`:
+
+<Steps>
+  <Step title="Geolocation button">
+    "El barrio donde estoy" — calls `navigator.geolocation` and finds the **nearest barrio by centroid distance** (not point-in-polygon). The 149 KB polygon file is not loaded here; centroid distance is fast, runs entirely in the browser, and is accurate enough for a preselection the user can change in one tap. Near a border it can name the barrio across the street, which costs nothing because the stored barrio comes from the final pin position either way.
+  </Step>
+  <Step title="Accent-folding combobox search">
+    A search input renders a scrollable inline list (not a floating popover — a popover on a phone covers the field that filters it). The `fold()` function normalizes query and name strings via `String.normalize("NFD")` + diacritic removal + `toLowerCase()`, so "fatima" finds "Fátima". The list holds 118 entries (114 Manizales barrios + 4 Villamaría entries from `neighborhood_public`).
+  </Step>
+  <Step title="Query param pre-selection">
+    When the report form is reached by tapping a barrio on the map, the `?barrio=` query parameter pre-selects that barrio instantly — no search needed.
+  </Step>
+</Steps>
+
+Once a barrio is selected, the picker collapses to a confirmation row showing the barrio name with a "Cambiar" button. The map is immediately re-framed to that barrio at street zoom level, making it practical to drag the pin to the exact spot.
+
+## Neighborhood status
+
+Curators can declare per-barrio alerts that appear as badges in the panel header:
+
+| Status type | Trigger | Badge color |
+|---|---|---|
+| Evacuation | `evacuated = true` | `--unclaimed` (red) |
+| Utility suspension | `gasStatus`, `powerStatus`, or `waterStatus` = `suspended` | `--claimed` (amber) |
+
+On the map itself, barrios with declared statuses receive a colored fill wash via `BarrioLayer` — evacuation gets the `--unclaimed` token, utility suspension gets `--claimed`. A barrio with an evacuation already draws attention; the utility shade is only applied to barrios **not** already showing an evacuation color, so signals don't stack.
+
+The `neighborhood_need` table holds curator-declared **priority levels** (`critical`, `high`, `normal`) for specific barrios and work order categories. These feed directly into the urgency scores in `lib/urgency.ts` — a barrio declared `critical` adds 30,000 points to the urgency of every work order in it, dominating all other factors by a factor of 10.
+
+## On-map barrio labels
+
+Barrio names are drawn directly on the map as a MapLibre symbol layer, visible from **zoom 14 and above**. At lower zoom levels, 114 names would fight the pins for the same pixels; zoom 14 is where someone has stopped scanning the city and started reading a neighborhood.
+
+The CARTO basemap also labels neighborhoods from OSM, so the component **hides the basemap's own neighborhood labels** while the custom layer is visible, to avoid two sets of names. This requires patching the `filter` of any symbol layer sourced from the `place` source-layer, targeting by OpenMapTiles `class` property (`suburb`, `neighbourhood`, `quarter`) rather than by layer id — CARTO buckets `class: "neighbourhood"` into a layer called `place_hamlet`, shared with `class: "hamlet"`, so matching by layer id would miss the neighborhood labels and would remove hamlet labels by accident.

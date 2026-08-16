@@ -1,0 +1,160 @@
+---
+title: "Animal Reports: Lost, Found, and Sighted Pets"
+sidebarTitle: "Animals"
+description: "Animal reports let volunteers track lost, found, and sighted pets during the emergency. A photo board plus map markers with contact info help reunite animals with their owners."
+---
+
+The animal board addresses a real and often overlooked need during emergencies: pets separated from their owners. Reports cover lost, found, and sighted animals — the distinction matters, because a lost animal has no known location, only a last sighting, and presenting it as though it does would send a volunteer to the wrong block. The board is designed around that asymmetry: a photo and a description are what reunite an animal, and the location pin, when it exists, is secondary.
+
+## Animal kinds and species
+
+Two enums classify every report:
+
+**Kinds** (`ANIMAL_KINDS`):
+
+| Kind | Spanish Label |
+|---|---|
+| `lost` | Se perdió |
+| `found` | Lo encontraron |
+| `sighted` | Lo vieron |
+
+**Species** (`ANIMAL_SPECIES`):
+
+| Species | Spanish Label |
+|---|---|
+| `dog` | Perro |
+| `cat` | Gato |
+| `other` | Otro |
+
+The badge styling per kind reflects the urgency: `lost` uses the unclaimed red surface (needs eyes on it); `found` uses the resolved green surface (good news); `sighted` uses the claimed amber surface (a data point, but not yet resolved).
+
+## Photo-first design
+
+The photo is the field that actually reunites an animal. It is uploaded separately — not inside the server action — so a multi-megabyte file never travels inside a form submission. Only the storage path (`photoPath`) arrives in the creation payload, and the DTO exposes the resolved public URL as `photoUrl`.
+
+The board shows photo cards. The map shows dotted markers for animals with a known coordinate (or with a named `zone` that can be resolved to a barrio centroid). An animal with neither a coordinate nor a zone has no pin on the map — it appears only on the board.
+
+## Location is optional
+
+Unlike a site or a work order, the coordinate on an animal report is entirely optional. A lost animal has no location — that is what "lost" means — and the schema refuses to pretend otherwise by forcing a coordinate.
+
+The primary geographic field is `zone`: a free-text barrio name. When `longitude` and `latitude` are absent but `zone` is present and matches a known neighborhood, the map resolves the animal's pin to that barrio's centroid. This gives the animal a visible presence on the map without claiming more precision than anyone has.
+
+When drawing a pin for display, the priority is:
+1. Exact coordinate (if `longitude` and `latitude` are both present)
+2. Barrio centroid for the named `zone` (if `zone` matches a known neighborhood)
+3. No pin (animal appears only on the board)
+
+## AnimalDTO fields
+
+<ResponseField name="id" type="string (UUID)" required>
+  Unique identifier for the animal report.
+</ResponseField>
+
+<ResponseField name="kind" type="AnimalKind" required>
+  One of `lost`, `found`, `sighted`.
+</ResponseField>
+
+<ResponseField name="species" type="AnimalSpecies" required>
+  One of `dog`, `cat`, `other`.
+</ResponseField>
+
+<ResponseField name="petName" type="string | null">
+  The animal's name, if known. Often unknown for found or sighted animals.
+</ResponseField>
+
+<ResponseField name="description" type="string" required>
+  Physical description — color, size, collar, distinguishing marks. This is the field a stranger uses to recognize the animal.
+</ResponseField>
+
+<ResponseField name="photoUrl" type="string (URL) | null">
+  Public URL of the uploaded photo, already resolved from the storage path. `null` if no photo was submitted.
+</ResponseField>
+
+<ResponseField name="lastSeenAt" type="string (ISO 8601 datetime with offset)" required>
+  When the animal was last seen or found. Not when the report was created.
+</ResponseField>
+
+<ResponseField name="longitude" type="number | null">
+  WGS-84 longitude of the last sighting. Nullable — a lost animal has no location.
+</ResponseField>
+
+<ResponseField name="latitude" type="number | null">
+  WGS-84 latitude of the last sighting. Nullable for the same reason.
+</ResponseField>
+
+<ResponseField name="zone" type="string | null">
+  Free-text barrio or zone name. The primary geographic field when no exact coordinate is available.
+</ResponseField>
+
+<ResponseField name="whatsapp" type="string" required>
+  Contact WhatsApp number for whoever submitted the report. Required — without it, a volunteer who spots the animal has no way to notify anyone.
+</ResponseField>
+
+<ResponseField name="resolvedAt" type="string (ISO 8601 datetime with offset) | null">
+  Set once the animal is home. The row stays on the board — a closed story tells the next reader that this one ended well.
+</ResponseField>
+
+<ResponseField name="confirmedAt" type="string (ISO 8601 datetime with offset)" required>
+  When the report was last touched. Used for freshness labeling ("Visto hace 2 h"). The verb is "Visto", not "Confirmado" — a sighting is seen, not confirmed.
+</ResponseField>
+
+<ResponseField name="published" type="boolean" required>
+  Whether the report is visible to the public. Only curators may toggle this.
+</ResponseField>
+
+## Creating an animal report
+
+Anyone can report an animal — no account required. Someone who just found a dog in the street is exactly the person least likely to have an account.
+
+<ParamField body="kind" type="AnimalKind" required>
+  One of `lost`, `found`, `sighted`.
+</ParamField>
+
+<ParamField body="species" type="AnimalSpecies" required>
+  One of `dog`, `cat`, `other`.
+</ParamField>
+
+<ParamField body="petName" type="string">
+  The animal's name. Maximum 60 characters. Optional — often unknown.
+</ParamField>
+
+<ParamField body="description" type="string" required>
+  Physical description of the animal. Between 10 and 600 characters. Validation message: "Describe cómo reconocerlo: color, tamaño, collar". This field must describe color, size, and any distinguishing marks — that is what allows a stranger to recognize the animal.
+</ParamField>
+
+<ParamField body="photoPath" type="string">
+  Storage path of an uploaded photo. Maximum 300 characters. Optional — but the photo is the field that actually reunites animals. The file is uploaded separately via the storage flow; only its path is submitted here.
+</ParamField>
+
+<ParamField body="lastSeenAt" type="string (ISO 8601 datetime with offset)" required>
+  When the animal was last seen or found. ISO 8601 datetime with timezone offset.
+</ParamField>
+
+<ParamField body="longitude" type="number">
+  WGS-84 longitude of the sighting. Must be between `-76.2` and `-74.8` if provided. Optional.
+</ParamField>
+
+<ParamField body="latitude" type="number">
+  WGS-84 latitude of the sighting. Must be between `4.6` and `5.6` if provided. Optional.
+</ParamField>
+
+<ParamField body="zone" type="string">
+  Barrio or zone name as free text. Maximum 120 characters. Optional — used when no exact coordinate is available.
+</ParamField>
+
+<ParamField body="whatsapp" type="string" required>
+  Contact WhatsApp number. Digits only, 10–15 characters, with country code. Validation message: "Solo dígitos, con indicativo del país". Required — without it an offer surfaces nowhere actionable.
+</ParamField>
+
+## Marking resolved
+
+Once an animal is home, anyone — no account required — can mark the report as resolved. `resolvedAt` is set to the current timestamp. The bar for resolving is as low as reporting, deliberately: the person who reunites a dog is usually not the one who posted it, and a "resolved" flag that nobody can set leaves the board full of animals that were found weeks ago, which buries the ones still missing.
+
+The row stays on the board after resolution. A closed story tells the next reader that this one ended well, and it reduces the cognitive load of scanning a board where most pins are still open.
+
+Only curators may unpublish or delete a report outright — those are the two actions an edit cannot undo.
+
+<Tip>
+The `description` field is the most important field on the form. A description like "Perro criollo café, collar azul, mediano, cojea de una pata" — color, size, collar, distinguishing marks — is what lets a stranger recognize the animal on the street. A description that says only "perro café" is unlikely to result in a reunion. Encourage reporters to be specific: coat pattern, distinctive features, whether the animal responds to a name.
+</Tip>

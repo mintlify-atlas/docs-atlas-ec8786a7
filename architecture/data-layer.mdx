@@ -1,0 +1,255 @@
+---
+title: "Data Layer: DAL, DTO, Policy, and Actions Pattern"
+sidebarTitle: "Data Layer"
+description: "Every entity in Manizales de Pie follows a four-file pattern — DTO, policy, DAL, actions. Learn the contract each file holds and the mutation order that is never broken."
+---
+
+Every entity in the `data/` directory follows the same four-file pattern. `data/site/` is the reference implementation — when in doubt, copy its shape exactly. The order in which the files are created is not arbitrary: each file depends only on the ones before it, so starting in the wrong place means you are writing something you cannot yet test or authorize.
+
+## The four files
+
+<Steps>
+  <Step title="<module>.dto.ts — Zod schemas for input and output">
+    The DTO file defines what goes in and what comes out. Two schemas minimum. The output schema is the one people skip and the one that matters most: it controls what the browser ever sees from a database row.
+
+    Nothing in a DTO is spread from a database row. Every field is mapped explicitly in the DAL, so a column added to the database tomorrow cannot leak into the client by accident.
+
+    The `site` entity defines several schemas. The two primary ones are `siteSchema` (output) and `createSiteSchema` (public form input):
+
+    ```typescript
+    // data/site/site.dto.ts
+    import { z } from "zod";
+
+    export const siteSchema = z.object({
+      id: z.uuid(),
+      type: siteTypeSchema,
+      name: z.string(),
+      description: z.string().nullable(),
+      address: z.string().nullable(),
+      longitude: z.number(),
+      latitude: z.number(),
+      neighborhood: z.string().nullable(),
+      status: siteStatusSchema,
+      schedule: z.string().nullable(),
+      whatsapp: z.string().nullable(),
+      confirmedCount: z.number().int().min(0),
+      // offset: true is required — PostgREST emits "+00:00", not "Z"
+      confirmedAt: z.iso.datetime({ offset: true }),
+      expiresAt: z.iso.datetime({ offset: true }),
+      items: z.array(siteItemSchema),
+      published: z.boolean(),
+    });
+
+    export type SiteDTO = z.infer<typeof siteSchema>;
+
+    const OUT_OF_AREA = "Este mapa solo cubre Manizales y Villamaría.";
+
+    export const createSiteSchema = z.object({
+      type: siteTypeSchema,
+      name: z.string().trim().min(3, "Escribe un nombre reconocible").max(120),
+      description: z.string().trim().max(1000).optional(),
+      address: z
+        .string()
+        .trim()
+        .min(5, "Escribe la cuadra, la esquina o un punto de referencia")
+        .max(200),
+      longitude: z.number().min(-76.2, OUT_OF_AREA).max(-74.8, OUT_OF_AREA),
+      latitude: z.number().min(4.6, OUT_OF_AREA).max(5.6, OUT_OF_AREA),
+      schedule: z.string().trim().max(120).optional(),
+      whatsapp: z
+        .string()
+        .trim()
+        .regex(/^\d{10,15}$/, "Debe ser solo dígitos, con indicativo del país")
+        .optional(),
+    });
+
+    export type CreateSiteInput = z.infer<typeof createSiteSchema>;
+    ```
+
+    The coordinate bounds in `createSiteSchema` are not cosmetic — they enforce the product's geographic scope. A report from outside Manizales and Villamaría is rejected at the door with a message explaining why, not silently accepted into a queue nobody will work.
+
+    The `offset: true` on datetime fields is required, not cosmetic. PostgREST serialises a `timestamptz` as `"2026-08-14T02:12:27.271436+00:00"` (offset notation), and Zod's default ISO datetime parser only accepts a `"Z"` suffix. Without `offset: true`, every row fails validation the moment real data exists.
+  </Step>
+
+  <Step title="<module>.policy.ts — Pure predicates">
+    Policy files contain pure functions that return booleans. No database access, no session lookups, no side effects. A policy receives everything it needs as arguments.
+
+    This constraint is enforced by ESLint: `*.policy.ts` files may not import `@/lib/supabase/*`, `next/headers`, or `next/navigation`. The reason is testability and readability — a policy is the plain list of the product's rules, readable without spinning up a database.
+
+    ```typescript
+    // data/site/site.policy.ts
+    import type { CurrentUser } from "@/data/user/require-user";
+
+    /** Anyone may propose a site. Curation, not registration, is the gate. */
+    export function canProposeSite(): boolean {
+      return true;
+    }
+
+    /** Only a curator makes something visible to the city. */
+    export function canPublishSite(user: CurrentUser | null): boolean {
+      return user?.role === "curator";
+    }
+
+    /**
+     * Anyone at all can say a site is still open, or full, or closed — no account.
+     * Requiring a session here had the incentive backwards: the person standing
+     * in front of the closed shelter is the least likely to have signed in, and
+     * they are the only one who actually knows.
+     */
+    export function canConfirmSite(): boolean {
+      return true;
+    }
+
+    /**
+     * Correcting a site's own fields — type, name, address, hours, phone.
+     * Anyone, with no account.
+     */
+    export function canEditSite(): boolean {
+      return true;
+    }
+
+    /** Hiding or deleting a site outright — curators only. */
+    export function canManageSite(user: CurrentUser | null): boolean {
+      return user?.role === "curator";
+    }
+    ```
+
+    The policies for `canProposeSite`, `canConfirmSite`, and `canEditSite` return `true` unconditionally. That is a deliberate product decision: during a fast emergency, requiring an account to report or confirm information makes the reviewer the bottleneck, and information arrives after it was needed.
+  </Step>
+
+  <Step title="<module>.dal.ts — The database access layer">
+    The DAL is the only file in the module that may touch the database. It opens with `import "server-only"` — importing a DAL from a client component is a build error.
+
+    The class uses a private constructor and two static factories. This design means an instance cannot exist without a resolved authorization context, and the factory name makes the authorization level visible at the call site:
+
+    ```typescript
+    // data/site/site.dal.ts
+    import "server-only";
+
+    import { createAdminSupabase } from "@/lib/supabase/admin";
+    import { createServerSupabase } from "@/lib/supabase/server";
+
+    export class SiteDAL {
+      private constructor(private readonly user: CurrentUser | null) {}
+
+      /** Authenticated context, for anything that writes. */
+      static async create(): Promise<SiteDAL> {
+        return new SiteDAL(await getCurrentUser());
+      }
+
+      /** Read-only context for genuinely public data: the map anyone can open. */
+      static public(): SiteDAL {
+        return new SiteDAL(null);
+      }
+
+      async listPublished(): Promise<SiteDTO[]> {
+        const supabase = await createServerSupabase();
+        // ...reads through the session-bound client so RLS applies
+      }
+
+      async propose(input: unknown): Promise<{ id: string }> {
+        // 1. validate input
+        const data = createSiteSchema.parse(input);
+        // 2. authorize
+        if (!canProposeSite()) throw new Error("Forbidden");
+        // 3. mutate
+        const supabase = createAdminSupabase();
+        const { data: row, error } = await supabase.from("site").insert({ ... });
+        // 4. validate output (via toDTO)
+        return { id: row.id };
+      }
+
+      /** Map explicitly, never spread. */
+      private toDTO(row: Record<string, unknown>): SiteDTO {
+        return siteSchema.parse({
+          id: row.id,
+          type: row.type,
+          name: row.name,
+          // ... every field mapped by name
+        });
+      }
+    }
+    ```
+
+    The `toDTO` method is the output validation step. It is `private` and called by every read method. A column added to the database tomorrow stays server-side until someone deliberately adds it to both `toDTO` and the output schema. Rows are never spread into a response.
+  </Step>
+
+  <Step title="<module>.actions.ts — Server action orchestration">
+    Action files open with `"use server"`. They orchestrate and nothing more: build the DAL, call it, revalidate. The DAL validates input, authorizes the caller, and validates output. The action trusts none of that to be done elsewhere.
+
+    ```typescript
+    // data/site/site.actions.ts
+    "use server";
+
+    import { revalidatePath } from "next/cache";
+    import { SiteDAL } from "./site.dal";
+
+    export async function proposeSite(formData: FormData) {
+      const dal = await SiteDAL.create();
+
+      const { id } = await dal.propose({
+        type: formData.get("type"),
+        name: formData.get("name"),
+        description: formData.get("description") || undefined,
+        address: formData.get("address") || undefined,
+        longitude: Number(formData.get("longitude")),
+        latitude: Number(formData.get("latitude")),
+        schedule: formData.get("schedule") || undefined,
+        whatsapp: formData.get("whatsapp") || undefined,
+      });
+
+      revalidatePath("/");
+      revalidatePath("/admin");
+      return { id };
+    }
+
+    export async function findNearbySites(longitude: number, latitude: number) {
+      const dal = SiteDAL.public();
+      return dal.findNearby(longitude, latitude, 120);
+    }
+    ```
+
+    Actions do not check roles or validate data themselves — that logic belongs in the policy and DAL. An action that checks `user.role === "curator"` before calling the DAL is a second, unguarded copy of a rule that should live in one place.
+  </Step>
+</Steps>
+
+## Mutation order
+
+Every mutation in every DAL follows this sequence. There are no exceptions:
+
+1. **Validate input** — parse with the Zod input schema
+2. **Authorize** — call the policy predicate
+3. **Mutate** — execute the database write
+4. **Validate output** — parse the result through the Zod output schema (via `toDTO`)
+
+<Warning>
+  A server action is a public POST endpoint. Anyone can call it with a crafted request, bypassing every form validation the browser enforces. Arriving through the application's own form is not a fact the action may assume.
+
+  This is why an action checks nothing itself and the DAL checks everything. One place, no exceptions: the action orchestrates, the DAL guards.
+</Warning>
+
+## PostGIS columns
+
+PostgREST serialises `geography` columns as WKB hex strings, which are useless to a map renderer. The `site_public` and `work_order_public` views project the `location` and `approx_location` columns as plain `longitude` and `latitude` numbers using `ST_X` and `ST_Y`:
+
+```sql
+create view site_public with (security_invoker = on) as
+select s.id,
+       s.type,
+       s.name,
+       st_x(s.location::geometry) as longitude,
+       st_y(s.location::geometry) as latitude,
+       n.name                     as neighborhood,
+       -- ...
+from site s
+left join neighborhood n on n.id = s.neighborhood_id
+where s.merged_into_id is null;
+```
+
+Both views are declared `security_invoker = on`. Without that flag, a view runs with the definer's rights and quietly bypasses every RLS policy on the underlying tables. The DAL always reads through these views, never directly from the base tables.
+
+## Stale data policy
+
+Nothing in this codebase is deleted for being stale. Every perishable table carries `confirmed_at` and `expires_at` columns. A row whose `expires_at` has passed is labelled stale and demoted in the map's visual hierarchy — it stays listed, it stays contactable, but it stops competing with a freshly confirmed row for visual priority.
+
+The `confirmed_at` timestamp is reset by confirmations: when someone standing in front of a site confirms its status, `confirmed_at` is set to `now()` and `expires_at` is pushed 24 hours forward. A map that hides unconfirmed information would hide the only warning anyone has during the first hours of an emergency. Labelling the uncertainty is the safer choice.

@@ -1,0 +1,98 @@
+---
+title: "Reporting: Submit Sites, Needs, Animals, and Resources"
+sidebarTitle: "Reporting"
+description: "Anyone can report an aid site, community need, lost animal, or resource offer — no account required. Reports are published immediately and labeled as unconfirmed."
+---
+
+Manizales de Pie uses an **open-publication model**: reports go live immediately and are labeled as unconfirmed. Curators moderate down (hiding spam); the community confirms accuracy by tapping the confirmation button on each card. This is the opposite of a gatekeeper model — holding a report back until a curator approves it makes the reviewer the bottleneck, and in a fast emergency information that arrives too late is the same as information that never arrived.
+
+## What can be reported
+
+<CardGroup cols={2}>
+  <Card title="Aid Site" icon="map-pin" href="/features/sites">
+    A physical location providing earthquake relief. Types: collection point (acopio), shelter (albergue), blood donation, medical post (PMU), or census/subsidy point.
+  </Card>
+  <Card title="Community Need" icon="life-buoy" href="/features/work-orders">
+    A case someone with tools or hands can address: debris removal, structural risk, animal rescue, or supplies needed by a household.
+  </Card>
+  <Card title="Animal" icon="paw-print" href="/features/animals">
+    A lost, found, or sighted pet — with a photo, which is what actually makes someone recognize it. The board stays open until the animal is marked as reunited.
+  </Card>
+  <Card title="Resource Offer" icon="truck" href="/features/resource-offers">
+    Something a person already owns and is lending: dump truck, tools, free transport, warehouse space, or a spare room (home stay). Published for one week.
+  </Card>
+</CardGroup>
+
+## No account required
+
+Reporting never requires a Google account. The only action that requires sign-in is **creating a volunteer call (jornada)**, because it commits other people to a time and a place — from the moment the row exists, other people move their Saturday and hand their phone number to whoever organized it. The account wall appears at the end of the form (`PublishGate`), after the draft is complete, and the draft including the pin survives the trip through Google sign-in.
+
+<Tip>
+"Yo puedo atender" on a work order also requires no account — just a name and WhatsApp (both optional). Multiple people can mark the same case as being attended; there is no exclusive claim that blocks anyone else.
+</Tip>
+
+## Duplicate detection
+
+When submitting a new site, the form calls `SiteDAL.findNearby()` — a **PostGIS proximity query with a 120 m radius** — before creating the record. If a nearby site is already on the map, the user sees it and can choose to confirm it instead of creating a duplicate:
+
+```tsx
+// From report-form.tsx
+if (!skipDuplicateCheck) {
+  const found = await findNearbySites(point.lng, point.lat);
+  if (found.length > 0) {
+    setNearby(found);
+    return;
+  }
+}
+```
+
+The duplicate panel shows each nearby site's name and distance in meters, with a link to its detail card and a "No es el mismo, publicar igual" escape hatch. This happens at the moment of reporting, where a duplicate can still be turned into a confirmation instead.
+
+## Barrio requirement
+
+Every site report must specify a barrio **before** the map opens for pin placement. The form enforces this:
+
+> "Elige primero el barrio. Sin eso el punto queda en el centro de la ciudad, que es peor que no publicarlo."
+
+The reason is practical: a reporter is standing on a street, with one bar of signal. Opening a map of the whole city and asking them to find their own block is the hard version of the question. Naming the barrio — something nobody in Manizales has to think about — is the easy version, and it reframes the map to street zoom so what remains is dragging the pin by metres, not kilometres.
+
+<Warning>
+If the form is submitted without a barrio, the pin would sit at the city center (the form's `START` coordinate: `-75.5074, 5.0631`). That coordinate looks deliberate and is not — it would send someone to the wrong place. The form blocks submission and shows the error message above.
+</Warning>
+
+## Address field
+
+The **"¿Dónde exactamente?"** field (`address`) is required on new site reports. The written reference carries the precision that a dragged pin approximates: the block, the corner, the landmark ("Frente a la panadería, casa 141…").
+
+The column in the database stays **nullable** so that existing rows without an address and bulk imports via Supabase MCP continue to validate. The requirement lives only where it can be answered — by the person standing at the location while reporting.
+
+## Publishing flow
+
+New reports are **published immediately** upon submission (`proposeSite` in `site.actions.ts`). They appear on the map at once, with:
+
+- `confirmed_count = 0`
+- `verified = false`
+- Status badge: "Sin confirmar"
+- Marker opacity: `opacity-55`
+
+<Note>
+Seed data in `seed.sql` inserts rows with `published = false` — but that is specifically because seed coordinates are approximations that haven't been verified on the ground. User reports through the form go live immediately, following the open-publication policy.
+</Note>
+
+The draft is preserved in `localStorage` via `useDraft("report:site", ...)` until the form is successfully submitted. A phone call, a lost signal, or a back gesture will not erase what was already typed.
+
+## Confirmation
+
+Each site card carries a **one-tap confirmation button**. Tapping it records a `confirmation_result` and increments `confirmed_count` if the result is positive.
+
+The three possible results:
+
+| Result | Increments `confirmed_count`? | Meaning |
+|---|---|---|
+| `still_valid` | ✅ Yes | I was there, it's still operating |
+| `changed` | ✅ Yes | I was there, something changed (details updated) |
+| `no_longer_valid` | ❌ No | The place is gone or was never there |
+
+Saying a place no longer exists is **not evidence that it exists** — so `no_longer_valid` does not count as a confirmation. As stated in `PLAN.md`: "`no_longer_valid` no incrementa el contador. Decir que algo ya no existe no es evidencia de que exista."
+
+Once `confirmed_count > 0`, the marker renders at full opacity and the confidence badge changes from "Sin confirmar" to the confirmation count.

@@ -1,0 +1,185 @@
+---
+title: "Work Orders: Community Needs with Activity Threads"
+sidebarTitle: "Work Orders"
+description: "Work orders are specific community needs — debris removal, structural risk, supplies — tracked through an anonymous activity thread that derives status from behavior, not declarations."
+---
+
+Work orders (necesidades) are the spine of the product. A work order is a single job at a single place — "escombros bloqueando la entrada de dos casas" — that stays on the map until enough people have helped and nobody says it still needs attention. Unlike a site, which is a persistent fixture, a work order is something to be done: it is true until it is not, and the thread of entries is the evidence of what happened between those two states.
+
+## Categories
+
+| Category | Spanish Label |
+|---|---|
+| `debris_removal` | Escombros |
+| `animal_rescue` | Rescate de animales |
+| `structural_risk` | Riesgo estructural |
+| `supplies` | Insumos |
+| `other` | Otro |
+
+`supplies` covers food, drinking water, and hygiene items — anything a family is asking for rather than a job site asking to be fixed. A former `water` category existed briefly and was retired: every real case tagged with it described food, water, and shelter together, which is supplies, not a category of its own. The Postgres enum still carries the value, but nothing in the application offers or accepts it.
+
+## Status lifecycle
+
+Status is **derived** from the `work_order_update` activity thread by the `sync_work_order_state` Postgres function. The application never writes a status directly. Closing used to be a single anonymous tap, which meant one bad actor could take any case off the map; that path no longer exists.
+
+| DB Status | Meaning |
+|---|---|
+| `unclaimed` | No one has said anything about this case |
+| `claimed` | At least one person said "yo puedo atender" |
+| `attended` | At least one person said "ya ayudé" — case is still open |
+| `closed_completed` | A curator closed the case as resolved |
+| `closed_by_others` | No longer used in the app flow (kept because the Postgres enum keeps it) |
+| `closed_rejected` | A curator marked the case as not real |
+
+The ordinary path to closing is the database threshold: two distinct phone numbers posting `helped` entries. No single person can reach that threshold alone, which is the whole point. The curator actions (`closed_completed`, `closed_rejected`) are the exception for cases that only one person ever helped with, or that are genuinely fake.
+
+## WorkOrderRollup
+
+The public UI does not show raw DB statuses. Instead, it computes a **rollup** from `status`, `reopened`, and `helpedCount` together (see `workOrderRollup` in `lib/labels.ts`):
+
+| Rollup | Description | Marker color |
+|---|---|---|
+| `untouched` | Nobody has said anything — the loudest thing on the map | Red (`bg-unclaimed`) |
+| `onTheWay` | Somebody said "voy", nobody has been yet | Softened red (`bg-unclaimed/75`) |
+| `partial` | One person helped — case is NOT better than half-done | Amber (`bg-claimed`) |
+| `advanced` | Two or more people helped, still open | Softened green (`bg-resolved/75`) |
+| `reopened` | "Sigue haciendo falta" after the last help — outranks all prior helps | Red (`bg-unclaimed`) |
+| `done` | Closed by curator — full green, the only final green | Green (`bg-resolved`) |
+| `dismissed` | Closed without resolution — rejected or already done by others | Gray (`bg-stale`) |
+
+The rollup exists because "helped once" does not mean "case closed". A damaged home is worked on over days, by different people, in shifts nobody coordinates centrally. Painting a pin green on the first `helped` entry caused cases that still needed five more people to stop receiving any. Help moves the pin through amber as it accumulates; green is reserved for an actual curator close.
+
+`reopened` outranks everything: a case where somebody stood there after the last help and said it still is not enough was, under the old model, wearing the color that means handled. The `reopened` boolean (derived in the database alongside `status`) is persisted separately so the rollup can catch this.
+
+## Activity thread
+
+Anyone can post an update entry, with no account required. Four kinds:
+
+| Kind | Spanish Label | Effect |
+|---|---|---|
+| `on_the_way` | Yo puedo atender | Sets status toward `claimed`; adds to `attendeeCount` |
+| `helped` | Ya ayudé | Increments `helpedCount`; two distinct phones closes the case |
+| `still_needed` | Sigue haciendo falta | Sets `reopened = true`; outranks all prior helps |
+| `not_real` | Esto no es un caso real | Curator review signal; does not close the case on its own |
+
+<Note>
+A case **never auto-closes** on a timer. Two distinct phone numbers posting `helped` is what allows the `sync_work_order_state` function to close it. An anonymous `helped` entry (no phone provided) still shows in the thread and counts toward `helpedCount`, but it cannot be one of the two distinct phone numbers the closing threshold requires. Anonymity is free everywhere except the one action that takes a case off the map.
+</Note>
+
+Each entry requires a `note` (3–500 characters) — not because the system needs it, but because a pile of anonymous taps coordinates nothing. The note is addressed to the next person who shows up, not to an administrator. Name and phone are both optional; leaving them blank publishes the entry as "Anónimo".
+
+## Contact fields
+
+`exactAddress`, `contactName`, `phone`, and `notes` are all public — no reveal gate — since August 15, when the attend-to-reveal gate was removed. They are all **optional** because the person filling out the form is often a neighbor reporting on behalf of an affected household, not the household itself. The form states out loud that these fields are visible to anyone.
+
+A case with no contact fields is still a valid case — the pin and the barrio are what make it findable on the map.
+
+## WorkOrderDTO fields
+
+<ResponseField name="id" type="string (UUID)" required>
+  Unique identifier for the work order.
+</ResponseField>
+
+<ResponseField name="category" type="WorkOrderCategory" required>
+  One of `debris_removal`, `animal_rescue`, `structural_risk`, `supplies`, `other`.
+</ResponseField>
+
+<ResponseField name="description" type="string" required>
+  Free-text description of the case, e.g. "Escombros bloqueando la entrada de dos casas, se necesita volqueta."
+</ResponseField>
+
+<ResponseField name="longitude" type="number" required>
+  WGS-84 longitude of the case location.
+</ResponseField>
+
+<ResponseField name="latitude" type="number" required>
+  WGS-84 latitude of the case location.
+</ResponseField>
+
+<ResponseField name="neighborhood" type="string | null">
+  Barrio name, derived from the coordinate by PostGIS. Never written by the application.
+</ResponseField>
+
+<ResponseField name="status" type="WorkOrderStatus" required>
+  One of `unclaimed`, `claimed`, `attended`, `closed_completed`, `closed_by_others`, `closed_rejected`. Derived by `sync_work_order_state`; never written by the application.
+</ResponseField>
+
+<ResponseField name="attendeeCount" type="number (integer ≥ 0)" required>
+  Distinct people who said "yo puedo atender". Several can be attending the same case simultaneously.
+</ResponseField>
+
+<ResponseField name="helpedCount" type="number (integer ≥ 0)" required>
+  Distinct people who said "ya ayudé". Two from two different phone numbers is what closes a case via the database threshold.
+</ResponseField>
+
+<ResponseField name="reopened" type="boolean" required>
+  `true` when someone said "sigue haciendo falta" after the last "ya ayudé". Derived in the database alongside `status`. Read through `workOrderRollup`, which combines it with `status` and `helpedCount` to determine what the marker shows.
+</ResponseField>
+
+<ResponseField name="exactAddress" type="string | null">
+  Street address or landmark, public since August 15.
+</ResponseField>
+
+<ResponseField name="contactName" type="string | null">
+  Name of the person to contact about the case, public since August 15.
+</ResponseField>
+
+<ResponseField name="phone" type="string | null">
+  Contact phone number, public since August 15.
+</ResponseField>
+
+<ResponseField name="notes" type="string | null">
+  Additional notes for whoever attends, public since August 15.
+</ResponseField>
+
+<ResponseField name="confirmedAt" type="string (ISO 8601 datetime with offset)" required>
+  When the case was last touched. Used for freshness labeling ("Publicado hace 2 h").
+</ResponseField>
+
+<ResponseField name="createdAt" type="string (ISO 8601 datetime with offset)" required>
+  When the case was first reported.
+</ResponseField>
+
+<ResponseField name="published" type="boolean" required>
+  Whether the work order is visible to the public. Only curators may toggle this.
+</ResponseField>
+
+## Creating a work order
+
+Anyone can report a work order — no account required. The contact fields are published on the card, so the form states that where they are typed.
+
+<ParamField body="category" type="WorkOrderCategory" required>
+  One of `debris_removal`, `animal_rescue`, `structural_risk`, `supplies`, `other`.
+</ParamField>
+
+<ParamField body="description" type="string" required>
+  Description of the case. Between 5 and 500 characters.
+</ParamField>
+
+<ParamField body="longitude" type="number" required>
+  WGS-84 longitude. Must be between `-76.2` and `-74.8`. Out-of-area values are rejected with "Este mapa solo cubre Manizales y Villamaría."
+</ParamField>
+
+<ParamField body="latitude" type="number" required>
+  WGS-84 latitude. Must be between `4.6` and `5.6`. Same out-of-area message applies.
+</ParamField>
+
+<ParamField body="exactAddress" type="string">
+  Street address or landmark reference. Maximum 200 characters. Optional.
+</ParamField>
+
+<ParamField body="contactName" type="string">
+  Name of the person to contact. Maximum 120 characters. Optional.
+</ParamField>
+
+<ParamField body="phone" type="string">
+  Contact phone number. Digits only, 7–15 characters. Validation message: "Debe ser solo dígitos". Optional — but a `helped` entry from a phone-less reporter cannot contribute to the closing threshold.
+</ParamField>
+
+<ParamField body="notes" type="string">
+  Additional notes for whoever attends. Maximum 500 characters. Optional.
+</ParamField>
+
+<Warning>
+Nothing in the application ever sets `status` directly. Status is a read-only derived field, computed entirely by the `sync_work_order_state` Postgres function from the `work_order_update` thread. Closing is only possible via curator actions (`closed_completed`, `closed_rejected`) or via the automatic database threshold (two distinct `helped` entries from two different phone numbers). Any feature that tries to write a status value directly is a design error — it hands back the single-tap closing power that the append-only thread was built to take away.
+</Warning>

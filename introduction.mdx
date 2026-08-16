@@ -1,0 +1,80 @@
+---
+title: "Manizales de Pie: Earthquake Relief Coordination Map"
+sidebarTitle: "Introduction"
+description: "Manizales de Pie is an open-source real-time map coordinating earthquake relief across Manizales and Villamaría, Colombia. Learn what it is, why it was built, and how it works."
+---
+
+Manizales de Pie is a live, open-source coordination map built to answer a single question: **"¿dónde ayudo hoy?"** — where do I help today? It was created in the immediate aftermath of the magnitude 7.4 earthquake of August 10, 2026, which struck Manizales and Villamaría, Caldas, Colombia. In the hours and days that follow an urban earthquake, thousands of people want to help but cannot quickly find out where help is actually needed right now. Every component in this codebase exists to surface that answer within the first three seconds of opening the map.
+
+## What it does
+
+The map renders four entity types as interactive pins across Manizales and Villamaría. Each pin type represents a different facet of the relief effort:
+
+| Entity | Description |
+|---|---|
+| **Sitios** (Sites) | Verified collection and distribution points — shelters, donation drop-offs, volunteer staging areas |
+| **Órdenes de trabajo** (Work orders) | Specific household needs reported by affected residents or neighbours, such as rubble removal, structural assessment, or medical attention |
+| **Animales** (Animals) | Lost, injured, or displaced animals requiring rescue or temporary care |
+| **Ofertas de recursos** (Resource offers) | Available assets such as trucks, tools, and free transport that the community is offering |
+
+A unified side panel groups all four types under filterable chips — **Todo**, **Sitios**, **Mascotas**, **Servicios**, and **Necesidades** — so a volunteer arriving at the map for the first time can instantly narrow their view to what they can actually contribute. A live **HOY** bar at the top surfaces activity from the current day, pushing the most time-sensitive items above the fold without the user having to search.
+
+## Design principles
+
+<CardGroup cols={2}>
+  <Card title="Publish first, moderate down" icon="megaphone">
+    Anyone can submit a report without an account. The default publication model is open: new reports are held at `published = false` only to allow a curator to verify the coordinates before the pin goes live, not to gate who may report. Hiding spam is the only reason a published row disappears.
+  </Card>
+  <Card title="Anonymous by default" icon="user-slash">
+    No account is required to view the map or to submit a work order or animal report. Identity — via Google Sign-In — is needed only for actions that carry accountability, such as claiming a work order or curating listings. A phone number is declared by the user, never verified by the system.
+  </Card>
+  <Card title="Neighbourhood-first geometry" icon="map-pin">
+    The city is divided into 114 official barrios sourced from the SIG Alcaldía de Manizales. A PostGIS trigger derives the `neighborhood_id` of every pin automatically from its coordinates, keeping the barrio consistent with the point rather than with whatever a user typed. The barrio drives panel filters, proximity weighting, and every count a volunteer reads.
+  </Card>
+  <Card title="Status from behaviour" icon="chart-bar">
+    Work order status is never written directly by the application. Instead, community thread entries — *voy*, *ya ayudé*, *sigue haciendo falta*, *no es real* — flow into `work_order_update`, and `sync_work_order_state` derives the displayed status from them. Closing a case is a deliberate curator decision (`closed_completed` or `closed_rejected`), not an automatic consequence of someone tapping "done".
+  </Card>
+</CardGroup>
+
+## Tech stack
+
+| Technology | Version |
+|---|---|
+| Next.js | 16.3.0 |
+| React | 19.2.8 |
+| TypeScript | 5.x |
+| Tailwind CSS | 4.x |
+| Supabase (`@supabase/supabase-js`) | 2.112.3 |
+| Supabase SSR (`@supabase/ssr`) | 0.12.4 |
+| PostgreSQL + PostGIS | Supabase managed extension |
+| MapLibre GL | 5.x |
+| Zod | 4.4.3 |
+| shadcn CLI | 4.18.0 |
+
+The architecture follows a strict dependency rule enforced by ESLint: `app/` routes may only reach the database through `data/` modules, and `data/` modules are the sole owners of Supabase queries. `lib/` holds shared plumbing — clients, config, logging, and the `labels.ts` file that is the single crossing point between English code and Spanish UI copy.
+
+## Out of scope
+
+<Note>
+  The following were each decided against explicitly, for documented reasons. If any comes back up, reopen the decision rather than adding it quietly:
+
+  - **Missing persons** — the project links to the Red Cross instead
+  - **Housing people in strangers' homes** — deliberate exclusion
+  - **Handling money** — no payment flows of any kind
+  - **Offline / PWA support** — the documented failure mode of this category of app is being useless when the event itself took down the network; the trade-off was accepted
+  - **Native mobile apps** — the web app is designed and tested on real phones
+  - **Multi-emergency support** — built for one specific event
+  - **Internal chat** — coordination happens through declared contact details, not a platform inbox
+  - **Internationalisation (i18n)** — the UI is Spanish (es-CO) only; code and database are English only
+</Note>
+
+---
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Stand up a local instance with Supabase, PostGIS, seed data, and Google Auth in under 15 minutes.
+  </Card>
+  <Card title="Architecture Overview" icon="sitemap" href="/architecture">
+    Understand the dependency rule, layer boundaries, data model, and the PostGIS schema.
+  </Card>
+</CardGroup>

@@ -1,0 +1,119 @@
+---
+title: "Database Setup: Migrations, PostGIS, and RLS Policies"
+sidebarTitle: "Database"
+description: "Apply Manizales de Pie's migrations to create 11 tables, enable PostGIS, and configure row-level security, proximity RPCs, and neighborhood triggers."
+---
+
+The database schema is managed with Supabase migrations. Running `npx supabase db push` applies all migrations in order, enabling PostGIS, creating the full schema, and installing every RLS policy, proximity RPC, and trigger. The database is not a passive store — it is the map. Nothing renders until the schema is in place.
+
+## Linking your project
+
+Before pushing migrations, link the Supabase CLI to your project. The project ref appears in your dashboard URL: `https://app.supabase.com/project/<ref>`.
+
+```bash
+npx supabase link --project-ref <your-project-ref>
+npx supabase db push
+```
+
+The CLI will apply every file in `supabase/migrations/` in filename order. Migration files are named by timestamp, so ordering is deterministic.
+
+## What the migrations create
+
+Each migration file is narrow by design — one concern per file, one transaction per concern.
+
+<Steps>
+  <Step title="20260813000000_init.sql">
+    The foundation. Enables the PostGIS extension in the `extensions` schema, creates all enums (`user_role`, `municipality`, `site_type`, `site_status`, `item_mode`, `call_category`, `work_order_category`, `work_order_status`, `resource_type`, `road_status`, `confirmation_result`, `confirmable_entity`), and creates all 11 tables: `profile`, `neighborhood`, `site`, `site_item`, `volunteer_call`, `work_order`, `work_order_contact`, `work_order_access`, `resource_offer`, `closed_road`, and `confirmation`.
+
+    Also installs spatial GiST indexes, base RLS policies for every table, the proximity RPCs (`find_nearby_sites`, `find_nearby_work_orders`), the `release_stale_claims` function, the `handle_new_user` trigger that creates a profile row on first sign-in, and the `site_public` / `work_order_public` views with `security_invoker = on`.
+  </Step>
+  <Step title="20260814000000_revoke_public_rpc.sql">
+    Revokes `EXECUTE` on internal RPC functions from the `public` role, tightening the PostgREST surface.
+  </Step>
+  <Step title="20260814010000_bootstrap_curator.sql">
+    Establishes the pattern for assigning the first curator role to a profile. Run this after creating the first Google sign-in account and noting its user ID.
+  </Step>
+  <Step title="20260814020000_open_publication.sql">
+    Sets `published = true` as the default for user-submitted reports, so incoming reports are immediately visible without a curator approval step.
+  </Step>
+  <Step title="20260814030000_call_attendance.sql">
+    Adds attendance slot tracking to volunteer calls, enabling the slots-taken counter on the HOY bar.
+  </Step>
+  <Step title="20260814050000_animal_report.sql">
+    Adds the `animal` table for lost and found animal reports, including storage references for photos.
+  </Step>
+  <Step title="20260814060000_confirmable_animal_report.sql">
+    Adds `confirmed_at` and `expires_at` confirmation fields to the `animal` table, bringing it in line with the perishable-row contract used by every other mapped entity.
+  </Step>
+  <Step title="20260814080000_neighborhood_boundaries.sql">
+    Adds a `boundary` geography column to the `neighborhood` table, enabling the barrio polygon layer and the relocation boundary check (`canRelocate` in `data/geo/relocation.policy.ts`).
+  </Step>
+  <Step title="20260814110000_neighborhood_status.sql">
+    Adds per-barrio evacuation and utility status fields to the `neighborhood` table, powering the frente status panel.
+  </Step>
+  <Step title="20260814140000_neighborhood_need.sql">
+    Creates the `neighborhood_need` table for curator-declared priority needs at the barrio level.
+  </Step>
+  <Step title="20260815030000_work_order_updates.sql">
+    Creates the `work_order_update` table (entries: *voy*, *ya ayudé*, *sigue haciendo falta*, *no es real*) and installs the `sync_work_order_state` function that derives `work_order.status` from those entries. Work orders no longer close themselves — status is derived, never written directly by the application.
+  </Step>
+  <Step title="20260815070000_work_order_reopened.sql">
+    Adds the `reopened` derived boolean to `work_order`, computed by `sync_work_order_state`.
+  </Step>
+  <Step title="20260816020000_relocate_grants.sql">
+    Grants the RLS permissions required for pin relocation — any authenticated user may move a `site` or `work_order` pin within its own barrio boundary.
+  </Step>
+  <Step title="Later migrations">
+    Additional refinements are present in `supabase/migrations/` beyond those listed above, including `20260814040000_site_type_census_point.sql`, `20260814070000_drop_closed_road.sql`, `20260814090000_volunteer_call_public.sql`, `20260814100000_neighborhood_public.sql`, `20260814120000_informal_calls.sql`, `20260814125000_resource_offer_neighborhood_id.sql`, `20260814130000_resource_offer_public.sql`, `20260814150000_work_order_attendance.sql`, `20260815000000_public_work_order_contact.sql`, `20260815010000_minimize_forms.sql`, `20260815020000_work_order_update_kinds.sql`, `20260815040000_drop_verification.sql`, `20260815050000_work_order_update_optional_contact.sql`, `20260815060000_drop_calls.sql`, `20260816000000_backfill_profiles.sql`, `20260816010000_drop_priority_notes.sql`, and `20260816030000_cases_never_auto_close.sql`. All are applied automatically by `npx supabase db push`.
+  </Step>
+</Steps>
+
+<Note>
+  **`ALTER TYPE ... ADD VALUE` requires its own migration.** PostgreSQL does not
+  allow adding a new value to an enum type in the same transaction as other DDL.
+  Never combine a new enum value with table alterations, index creation, or RLS
+  policy changes in a single migration file. Give each enum addition its own
+  file.
+</Note>
+
+## Loading neighborhood data
+
+After the migrations, the `neighborhood` table exists but is empty. The barrio filter in the map panel, the auto-assignment trigger, and the relocation boundary check all depend on reference rows being present.
+
+Load the 114 barrio polygons with:
+
+```bash
+node scripts/seed-barrios.mjs
+```
+
+This script reads `public/barrios.geojson` and inserts one `neighborhood` row per feature, populating `name`, `municipality`, `centroid`, and `boundary`. Without this step, the neighborhood filter has no entries to show and the `set_neighborhood_from_location` trigger cannot assign a barrio to incoming pins.
+
+## RLS overview
+
+Every table in the schema has row-level security enabled. The policies follow a consistent pattern:
+
+| Actor | Can read | Can write |
+|---|---|---|
+| `anon` (unauthenticated) | Published rows on most tables; `neighborhood` reference data | Nothing — all mutations go through the server-side data layer |
+| `authenticated` | Published rows + their own profile; `work_order_contact` only if they hold the claim | Via server action → DAL → service role only |
+| `curator` role | All rows on all tables, published or not | Via server action → DAL → service role only |
+| Service role (DAL only) | Everything | Everything |
+
+The `site_public` and `work_order_public` views are declared with `security_invoker = on`. This means queries run with the **caller's** RLS context rather than the view owner's. Without that setting, a query through the view would silently bypass every policy above.
+
+`work_order_contact` has the strictest policy: it is readable only by the profile that currently holds the claim on the associated `work_order` and by curators. Anonymous visitors cannot read it regardless of what the work order row says.
+
+## PostGIS geometry notes
+
+PostgREST serializes `geography` columns as WKB hex strings. Raw table columns like `site.location` and `work_order.approx_location` arrive in the browser as hex — not as usable coordinates.
+
+The `site_public` and `work_order_public` views project geography to plain floats:
+
+```sql
+st_x(s.location::geometry) as longitude,
+st_y(s.location::geometry) as latitude,
+```
+
+**Always read geographic data through these views**, never from the raw table columns. The proximity RPCs (`find_nearby_sites`, `find_nearby_work_orders`) accept plain `double precision` longitude and latitude parameters and handle the geometry cast internally.
+
+The `search_path` on those RPC functions is set to `extensions, pg_temp` rather than the usual empty string, because PostGIS lives in the `extensions` schema and the geography cast and `<->` operator cannot be schema-qualified inline.

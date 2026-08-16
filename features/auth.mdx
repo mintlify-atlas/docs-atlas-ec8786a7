@@ -1,0 +1,155 @@
+---
+title: "Authentication: Google Sign-In with Supabase Auth"
+sidebarTitle: "Authentication"
+description: "Manizales de Pie uses Google OAuth via Supabase Auth. Authentication is required only for actions that commit other people — reporting and map viewing are always anonymous."
+---
+
+Authentication in Manizales de Pie is intentionally minimal. The map, all reports, all confirmations, and all work order thread updates are anonymous — no account required. Google Sign-In is required only for actions where identity is consequential to others: specifically, where one person's action commits others to a time and place.
+
+## When an account is required
+
+Only creating a **volunteer call (jornada)** requires sign-in. A jornada declares a meeting point and a time slot — it is a commitment that affects whoever shows up — so the author needs a traceable identity.
+
+Everything else is anonymous and always will be:
+
+- Reporting a site, a need (work order), an animal, or a resource offer
+- Confirming a site's current status
+- Posting a note to a work order thread (voy / ya ayudé / sigue haciendo falta / no es real)
+
+The person standing in front of a closed shelter, on someone else's phone with one bar of signal, is the one whose report matters most. Requiring an account for that report costs the city the information.
+
+<Note>
+  The login screen copy reads: **"Solo necesitas cuenta para hacerte cargo de un caso. Reportar y ver el mapa nunca la piden."** This framing is load-bearing. People bounce if they believe they need an account just to read the map. The `AUTH_LABEL` object in `lib/labels.ts` owns this string — it is never hardcoded in a component — so it stays consistent across every surface where the sign-in prompt appears.
+</Note>
+
+## Google OAuth flow
+
+Supabase Auth handles the OAuth handshake. There is no username/password path, no magic link, and no SMS OTP anywhere in the project.
+
+<Steps>
+  <Step title="User taps Entrar">
+    The map header shows an **"Entrar"** button (`AUTH_LABEL.enter`) when no session exists. Tapping it navigates to `/auth/login`.
+  </Step>
+  <Step title="Login page">
+    `/auth/login` renders a single Google button (`GoogleButton` component). If a session already exists when the page loads, `getCurrentUser()` returns the user and the page immediately redirects to the `next` target — the user never sees the form twice.
+
+    ```tsx
+    // app/auth/login/page.tsx
+    if (await getCurrentUser()) redirect(target);
+    ```
+  </Step>
+  <Step title="Google redirects back">
+    After consent, Google redirects the browser to `/auth/callback?code=...`. The `sb_flow_id` parameter is forwarded when present — `@supabase/auth-js` supports several PKCE flows in flight at once, and without it the exchange falls back to the most recently stored verifier. Two tabs open on a bad signal is enough to hit a mismatch.
+  </Step>
+  <Step title="Callback exchanges the code">
+    The route handler at `app/auth/callback/route.ts` calls `supabase.auth.exchangeCodeForSession(code, flowId ? { flowId } : undefined)`. On success it calls `revalidatePath("/", "layout")` so the cached shell (which renders differently for a signed-in user) is invalidated, then redirects to the `next` path.
+
+    ```ts
+    // app/auth/callback/route.ts
+    const { error } = await supabase.auth.exchangeCodeForSession(
+      code,
+      flowId ? { flowId } : undefined,
+    );
+
+    if (error) {
+      log.error("auth.callback exchange failed", { reason: error.message });
+      return NextResponse.redirect(`${origin}/auth/error`);
+    }
+
+    revalidatePath("/", "layout");
+    return NextResponse.redirect(`${origin}${next}`);
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  **`proxy.ts`, not `middleware.ts`.** This project runs Next.js 16. The session-refresh file is `proxy.ts` and the export is `proxy`. `middleware.ts` does not exist in this version — having both files is a build error. Session refresh is `supabase.auth.getClaims()`, called before the response is committed. Supabase's own documentation still refers to `middleware.ts`; the pattern is correct but the filename is stale.
+</Note>
+
+### Open-redirect protection
+
+The `next` query parameter is attacker-controlled. During an emergency, people tap whatever link lands in a WhatsApp group. `safeNext()` (`app/auth/safe-next.ts`) enforces that only a same-site absolute path survives:
+
+```ts
+// app/auth/safe-next.ts
+export function safeNext(next: string | null | undefined): string {
+  if (!next) return "/";
+  if (!next.startsWith("/")) return "/";
+  if (next.startsWith("//")) return "/";
+  return next;
+}
+```
+
+A crafted link like `/auth/login?next=https://evil.example` is silently reduced to `/`. Protocol-relative paths (`//host`) are also rejected — browsers read them as protocol-relative and leave the site.
+
+## Session handling
+
+Supabase SSR manages auth cookies via `@supabase/ssr`. The `lib/supabase/server.ts` client reads the session from the incoming request cookies.
+
+`getCurrentUser()` in `data/user/require-user.ts` is the canonical way to read the session in server components and server actions. It is wrapped in React's per-render `cache()` so a page, its header, and any widgets all resolve the session in a single round trip — there is no stale-session hazard because it is a per-render cache, not a time-based one.
+
+```ts
+// data/user/require-user.ts (simplified)
+export const getCurrentUser = cache(async (): Promise<CurrentUser | null> => {
+  const supabase = await createServerSupabase();
+  const { data: claims } = await supabase.auth.getClaims();
+  const userId = claims?.claims.sub;
+  if (!userId) return null;
+
+  // Falls back to supabase.auth.getUser() if token did not carry user_metadata
+  // (asymmetric key path vs. Auth server fallback).
+  // ...
+
+  const { data: profile } = await supabase
+    .from("profile")
+    .select("role, full_name")
+    .eq("id", userId)
+    .single();
+
+  return {
+    id: userId,
+    email,
+    fullName: profile?.full_name ?? readName(meta) ?? email ?? "Anónimo",
+    avatarUrl,
+    role: profile?.role ?? "visitor",  // degrades gracefully if no row yet
+  };
+});
+```
+
+**`requireUser()`** wraps `getCurrentUser()` and redirects to `/auth/login` if no session exists. DAL methods that mutate data call `requireUser()` (or `requireCurator()`) at the top of their execution. A session with no `profile` row degrades to role `visitor` rather than returning `null`, so a user who just returned from Google OAuth never sees the "Entrar" button while a trigger races to create their row.
+
+## No phone verification
+
+There is no SMS OTP anywhere in the project. A phone number is declared by the user on their profile but is never verified by the platform. A Google account provides traceability; a curator calls the contact before verifying a listing. Keeping phone out of the auth flow also means a borrowed phone can still make anonymous reports.
+
+## Draft preservation
+
+The `useDraft` hook (`app/_hooks/use-draft.ts`) saves form state to `sessionStorage`. If a user hits the auth wall partway through filling out a form, their draft — including the pin location — is restored when they return from Google Sign-In.
+
+Without this, the coordinate would reset to the city center on return. Because a report is frequently made on a borrowed phone under stress, losing form state after the OAuth round trip is worse than having been asked to sign in upfront.
+
+```ts
+// app/_hooks/use-draft.ts (simplified)
+export function useDraft<T extends Record<string, unknown>>(key: string, initial: T) {
+  // Restores from sessionStorage on mount; writes back on every state change.
+  // sessionStorage (not localStorage): the draft belongs to this tab and this
+  // sitting — a draft that outlives the emergency helps nobody.
+  // ...
+}
+```
+
+`sessionStorage` is used rather than `localStorage` so the draft belongs to the tab and the session: a draft left on a borrowed phone does not wait for the next person.
+
+## Sign-out
+
+Sign-out lives in `app/auth/actions.ts` as a server action rather than in `data/`, because it touches only session cookies and not the database. It calls `supabase.auth.signOut()`, then `revalidatePath("/", "layout")` to flush the cached shell before redirecting to `/`.
+
+```ts
+// app/auth/actions.ts
+export async function signOut() {
+  const supabase = await createServerSupabase();
+  const { error } = await supabase.auth.signOut();
+  revalidatePath("/", "layout");
+  redirect("/");
+}
+```

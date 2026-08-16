@@ -1,0 +1,161 @@
+---
+title: "Roles and Curation: Visitors, Contributors, and Curators"
+sidebarTitle: "Roles & Curation"
+description: "Three roles govern what actions are available in Manizales de Pie: visitor, contributor, and curator. Curators moderate content using the admin actions strip on every entity card."
+---
+
+Manizales de Pie has three roles stored in the `profile.role` column. Roles control which destructive actions — hiding, deleting, and closing work orders — are available on any given session. Authorization is enforced inside the DAL policy predicates and never assumed from the request origin: a server action is a public POST endpoint, and arriving through the app's own form is not a fact the server gets to take for granted.
+
+## Role table
+
+| Role | Spanish | What they can do |
+|---|---|---|
+| `visitor` | Visitante | Read all published content; post anonymous reports, confirmations, and work order thread updates |
+| `contributor` | Colaborador | Same as visitor; can also create volunteer calls (requires a Google account) |
+| `curator` | Curador | All of the above, plus hide/show any entity, close work orders, move pins anywhere in the city, and access the admin actions strip on every card |
+
+The roles are declared as a Postgres enum in the initial migration:
+
+```sql
+-- supabase/migrations/20260813000000_init.sql
+create type user_role as enum ('visitor', 'contributor', 'curator');
+```
+
+Every new user starts as `contributor` (the `handle_new_user` trigger default). The `visitor` role is the safe fallback for a session that has a valid JWT but whose `profile` row does not exist yet — returning `null` in that state was the bug that kept showing "Entrar" to someone who had just come back from Google.
+
+```ts
+// data/user/require-user.ts
+export type CurrentUser = {
+  id: string;
+  email: string | null;
+  fullName: string;
+  avatarUrl: string | null;
+  role: "visitor" | "contributor" | "curator";
+};
+```
+
+## Admin actions strip
+
+When `isAdmin` is true (from `WorkspaceContext`), every entity card renders an additional strip below its content. The `AdminActions` component (`app/(map)/_components/admin-actions.tsx`) is shared across all entity types — sites, work orders, animals, resource offers — so a curator learns the controls once:
+
+<CardGroup cols={3}>
+  <Card title="Edit" icon="pencil">
+    Opens an inline edit form for the entity's text fields (name, description, address, schedule, WhatsApp). Fields differ per entity; the strip itself does not.
+  </Card>
+  <Card title="Hide / Publish" icon="eye">
+    Flips the `published` boolean. This is **reversible** — the row stays in the database, it simply stops appearing in public queries. A hidden row is shown to the curator with an amber strip so it is distinguishable while scrolling the map.
+  </Card>
+  <Card title="Delete" icon="trash">
+    Two-step inline confirmation ("¿Seguro? Se borra para siempre" → "Sí, borrar"). This is a real `DELETE FROM` — for spam and test rows only. Content that has simply gone stale should be hidden, not deleted.
+  </Card>
+</CardGroup>
+
+The strip's state and label copy all come from `ADMIN_LABEL` in `lib/labels.ts`. The vocabulary — edit, hide, publish, delete — is identical across all entity types by design.
+
+```tsx
+// app/(map)/_components/admin-actions.tsx (simplified)
+export function AdminActions({
+  published,
+  onSetPublished,
+  onDelete,
+}: {
+  published: boolean;
+  onSetPublished: (published: boolean) => Promise<void>;
+  onDelete: () => Promise<void>;
+}) {
+  // Shows current state first (Visible / Oculto badge),
+  // then the action that flips it (Ocultar / Publicar),
+  // then the Delete button with a two-step inline confirm.
+}
+```
+
+## Policy predicates
+
+All authorization is implemented as pure functions in `<module>.policy.ts` files under `data/`. A policy function takes only the data it needs (typically a `CurrentUser | null`) and returns a `boolean`. It never touches the database, reads from the session, or produces side effects — which is what makes the rules testable without a database and readable as a plain list of what the product permits.
+
+**Examples from the codebase:**
+
+```ts
+// data/site/site.policy.ts
+
+/** Anyone may propose a site. Curation is the gate, not registration. */
+export function canProposeSite(): boolean {
+  return true;
+}
+
+/** Hiding or deleting a site outright — curators only. */
+export function canManageSite(user: CurrentUser | null): boolean {
+  return user?.role === "curator";
+}
+```
+
+```ts
+// data/work_order/work_order.policy.ts
+
+/** Closing a case by hand is a curator's, and only a curator's. */
+export function canCloseWorkOrder(user: CurrentUser | null): boolean {
+  return user?.role === "curator";
+}
+
+/** Anyone can post an update (voy / ya ayudé / sigue haciendo falta / no es real). */
+export function canPostWorkOrderUpdate(): boolean {
+  return true;
+}
+```
+
+```ts
+// data/geo/relocation.policy.ts
+
+/**
+ * Any user can relocate a pin within its own barrio.
+ * A curator can relocate anywhere in the covered area.
+ * A pin that resolves to no barrio (outside held polygons) has no boundary —
+ * anyone may move it.
+ */
+export function canRelocate(
+  user: CurrentUser | null,
+  currentNeighborhoodId: string | null,
+  targetNeighborhoodId: string | null,
+): boolean {
+  if (user?.role === "curator") return true;
+  if (currentNeighborhoodId === null) return true;
+  return targetNeighborhoodId === currentNeighborhoodId;
+}
+```
+
+The barrio boundary rule exists because the barrio drives the panel's filter, the frente weighting, and every count anyone reads. Walking a pin across the city is indistinguishable from vandalism after the fact.
+
+## Assigning the curator role
+
+There is no UI for role assignment. It is done directly in the database:
+
+```sql
+UPDATE profile SET role = 'curator' WHERE id = '<uuid>';
+```
+
+Only someone with direct database access can elevate a user to curator. The `20260814010000_bootstrap_curator.sql` migration shows the pattern for the first curator: it rewrites the `handle_new_user` trigger to assign `curator` to a specific email address at account-creation time. The address is in the repo by design — it grants nothing to whoever reads it, because the account still has to pass Google OAuth. What it does buy is an auditable answer to "who made themselves curator, and when."
+
+```sql
+-- supabase/migrations/20260814010000_bootstrap_curator.sql
+insert into public.profile (id, full_name, role)
+values (
+  new.id,
+  coalesce(new.raw_user_meta_data ->> 'full_name', new.email, 'Anónimo'),
+  case
+    when new.email = bootstrap_email then 'curator'::public.user_role
+    else 'contributor'::public.user_role
+  end
+);
+```
+
+## Open publication model
+
+Items submitted through public forms go live **immediately** (`published = true` by default, set by migration `20260814020000_open_publication.sql`). This follows Ushahidi's documented guidance for fast emergencies: holding reports until a curator approves them makes the reviewer the bottleneck, and information that arrives late to a field team is the same as information that never arrived.
+
+The seed data (`supabase/seed.sql`) uses `published = false` because its coordinates are approximate and unverified. Sending someone to the wrong shelter is worse than having no pin at all. Curators publish seed rows after geocoding them.
+
+A curator's primary moderation action is therefore **toggling `published` off** to hide spam or unverified content, not approving an incoming queue. The record stays in the database; only its visibility changes.
+
+<Warning>
+  **Server actions are public POST endpoints.** Anyone on the internet can call them with a crafted request. Arriving through the app's own form is not a fact the server gets to assume. A curator's `role` is checked inside the DAL policy (`canManageSite`, `canCloseWorkOrder`, etc.) — not inferred from which button was clicked or which URL was called. Calling a curator-only action with a non-curator session returns an authorization error from the policy predicate, before any mutation reaches the database.
+</Warning>

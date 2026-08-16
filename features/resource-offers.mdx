@@ -1,0 +1,116 @@
+---
+title: "Resource Offers: Trucks, Tools, and Neighbor Services"
+sidebarTitle: "Resource Offers"
+description: "Resource offers let neighbors with trucks, tools, machinery, or spare rooms publish availability for the relief effort. Shown as cards, not map pins — the barrio is the relevant location."
+---
+
+Resource offers connect volunteers who have something to contribute — a dump truck, tools, a spare room — with the relief effort. Unlike sites or work orders, an offer is not anchored to an exact location: "tengo una volqueta disponible" is a barrio-level fact, not a corner. The product reflects this by displaying offers as cards in the panel rather than as pins on the map; the barrio, or "Toda la ciudad" for city-wide offers, is the relevant geographic unit.
+
+## Resource types
+
+| Type | Spanish Label |
+|---|---|
+| `dump_truck` | Volqueta |
+| `pickup` | Carro |
+| `tools` | Herramienta |
+| `warehouse` | Bodega |
+| `free_transport` | Transporte |
+| `machinery` | Maquinaria |
+| `home_stay` | Hogar de paso |
+| `other` | Otro |
+
+## No exact pin
+
+Resource offers are displayed as cards in the panel. They are never shown as pins on the map. The barrio (or "Toda la ciudad" for city-wide offers like free transport) sets the `area` field.
+
+When a barrio is selected, its centroid is stored as the `location` point in the database. This allows the neighborhood to be derived by the PostGIS trigger and for the offer to appear when a user filters by barrio — but the display never exposes a precise address, because "tengo una volqueta" does not have one.
+
+An offer with no coordinate at all is also valid. `longitude` and `latitude` are nullable throughout; `area` (the free-text barrio name) is the primary geographic field.
+
+## ResourceOfferDTO fields
+
+<ResponseField name="id" type="string (UUID)" required>
+  Unique identifier for the resource offer.
+</ResponseField>
+
+<ResponseField name="type" type="ResourceType" required>
+  One of `dump_truck`, `pickup`, `tools`, `warehouse`, `free_transport`, `machinery`, `home_stay`, `other`.
+</ResponseField>
+
+<ResponseField name="description" type="string" required>
+  Free-text description of what is being offered and any conditions, e.g. "Volqueta doble troque, disponible fines de semana. Tengo dos."
+</ResponseField>
+
+<ResponseField name="area" type="string | null">
+  Free-text barrio name or "Toda la ciudad". The primary geographic field for display and filtering.
+</ResponseField>
+
+<ResponseField name="longitude" type="number | null">
+  WGS-84 longitude of the barrio centroid, if one was resolved. Nullable — not all offers have a coordinate.
+</ResponseField>
+
+<ResponseField name="latitude" type="number | null">
+  WGS-84 latitude of the barrio centroid, if one was resolved. Nullable for the same reason.
+</ResponseField>
+
+<ResponseField name="neighborhood" type="string | null">
+  Barrio name derived by PostGIS from the coordinate, if one exists. Never written by the application.
+</ResponseField>
+
+<ResponseField name="whatsapp" type="string" required>
+  Contact WhatsApp number. Required — without it, nobody can take the offer up.
+</ResponseField>
+
+<ResponseField name="confirmedAt" type="string (ISO 8601 datetime with offset)" required>
+  When the offer was published. Displayed as "Publicado hace N horas" — not "Confirmado", because this field carries no vouching, only recency.
+</ResponseField>
+
+<ResponseField name="expiresAt" type="string (ISO 8601 datetime with offset)" required>
+  When the offer expires. Default is one week from creation. Stale offers are demoted, not deleted.
+</ResponseField>
+
+<ResponseField name="createdById" type="string (UUID) | null">
+  The user ID of whoever created the offer, if they were signed in. Nullable — offers can be submitted anonymously.
+</ResponseField>
+
+<ResponseField name="published" type="boolean" required>
+  Whether the offer is visible to the public. Only curators may toggle this.
+</ResponseField>
+
+## Creating a resource offer
+
+Anyone can propose a resource offer — no account required. The `whatsapp` field is required regardless of anonymity, because without it nobody can act on the offer.
+
+<ParamField body="type" type="ResourceType" required>
+  One of `dump_truck`, `pickup`, `tools`, `warehouse`, `free_transport`, `machinery`, `home_stay`, `other`.
+</ParamField>
+
+<ParamField body="description" type="string" required>
+  Description of the resource and any conditions. Between 5 and 500 characters.
+</ParamField>
+
+<ParamField body="area" type="string" required>
+  Free-text barrio name or "Toda la ciudad". Maximum 120 characters. Required — this is the geographic unit that matters for an offer. Examples: "Chipre", "San José", "Toda la ciudad".
+</ParamField>
+
+<ParamField body="longitude" type="number">
+  WGS-84 longitude of the barrio centroid. Must be between `-76.2` and `-74.8` if provided. Optional — the barrio centroid may be resolved automatically from `area` rather than submitted directly.
+</ParamField>
+
+<ParamField body="latitude" type="number">
+  WGS-84 latitude of the barrio centroid. Must be between `4.6` and `5.6` if provided. Optional.
+</ParamField>
+
+<ParamField body="whatsapp" type="string" required>
+  Contact WhatsApp number. Digits only, 10–15 characters, with country code. Validation message: "Debe ser solo dígitos, con indicativo del país". Required — the WhatsApp number is on the card, visible to everyone, so that someone can write directly to take the offer up.
+</ParamField>
+
+## Expiry
+
+Like all perishable entities in the system, resource offers carry `confirmedAt` and `expiresAt`. The default expiry is **one week** from creation. After that, the row is demoted in the panel (shown as stale) rather than deleted — stale rows are never removed, only deprioritized.
+
+The freshness label on a resource offer card reads "Publicado" rather than "Confirmado", because resource offers lost their `confirmed_count` column on August 15. `confirmedAt` here is the moment the offer went up, not when anybody vouched for it, and the label accurately describes that.
+
+<Note>
+`home_stay` (Hogar de paso) was added as a resource type because the project deliberately excludes housing people in strangers' homes as a platform-managed feature — there is no booking flow, no identity verification, and no liability framework that would make that safe at scale. But a neighbor who wants to offer a spare room to a displaced family can still do so through this entry. The distinction is that the offer surfaces through the community (direct WhatsApp contact) rather than through a platform-managed booking flow. The product does not intermediate that transaction; it only makes the offer visible.
+</Note>

@@ -1,0 +1,73 @@
+---
+title: "Architecture Overview: How Manizales de Pie Is Built"
+sidebarTitle: "Overview"
+description: "Manizales de Pie follows a strict three-layer dependency rule. Learn how app, data, and lib layers interact and why the boundaries exist."
+---
+
+Manizales de Pie is a real-time earthquake relief coordination map for Manizales and Villamaría (Caldas, Colombia). The codebase enforces a strict dependency rule: `app/ → data/ → lib/`. Nothing flows upward. Each layer has a single responsibility, and violating that order is a lint error, not a code review comment.
+
+## The three layers
+
+Every file in the project belongs to exactly one of three layers. Understanding which layer does what is the fastest way to know where a new piece of code should live.
+
+**`app/`** holds Next.js routes, layouts, and colocated components. It is the only layer that renders anything to the screen. Nothing in `app/` ever touches Supabase directly — no queries, no clients, no service-role imports. A Server Component that imports a DAL class from `data/` is the intended pattern; that is what the data layer is for.
+
+**`data/`** is the only path to the database. No Supabase query lives in a page, a component, a route handler, or an action outside of this layer. Every entity in `data/` is represented by four files: `<module>.dto.ts`, `<module>.policy.ts`, `<module>.dal.ts`, and `<module>.actions.ts`. The reference implementation is `data/site/` — when adding a new entity, copy its shape exactly.
+
+**`lib/`** holds shared plumbing that the other layers build on: the Supabase browser and server clients, the admin client, environment validation (`lib/env.ts`), structured logging, and the Spanish label maps (`lib/labels.ts`). Nothing in `lib/` knows about routes or entity-level business logic.
+
+## Enforced boundaries
+
+Documentation is a suggestion; a lint rule is a boundary. The following imports are illegal and are enforced by ESLint rules in `eslint.config.mjs`. A violation is an error at the first bad import, not a warning to ignore.
+
+| From | May not import | Why |
+|---|---|---|
+| `app/`, `components/` | `@/lib/supabase/admin`, `@supabase/supabase-js` | The service-role client bypasses row-level security |
+| `app/`, `components/` | `@/lib/env.server` | Server config cannot cross into the browser bundle |
+| `data/**` except `*.dal.ts` | the admin client | One door to the database, not two |
+| `*.policy.ts` | anything with a session or a query | Policies are pure predicates |
+| `app/**`, `components/**` (not `ui/`) | literal Tailwind colours | The palette lives in `app/globals.css` |
+
+The rule for `*.policy.ts` deserves emphasis: a policy file may not import `@/lib/supabase/*`, `next/headers`, or `next/navigation`. A policy is a function that receives everything it needs as arguments and returns a boolean. No session, no database, no side effects.
+
+The rule for literal Tailwind colours means writing `bg-unclaimed` instead of `bg-red-500`. Semantic tokens are defined once in `app/globals.css` and referenced everywhere; literal colour classes in components would create a second, uncontrolled palette.
+
+## Realtime and RLS
+
+Supabase Realtime subscriptions go browser → Postgres directly, bypassing the DAL entirely. That means row-level security (RLS) is the guard on realtime data — not the DAL. The DAL can enforce rules on reads that come through server actions and Server Components, but it cannot intercept a realtime channel.
+
+The practical consequence: any new sensitive column must live in a table that no realtime channel subscribes to. Adding a sensitive column to a published, subscribed table — even temporarily — opens it to every connected browser. This is never a temporary decision.
+
+The `site_public` and `work_order_public` views are declared `security_invoker = on`, which means they execute with the calling user's permissions rather than the definer's. Without that flag, a view would silently bypass every RLS policy on the underlying tables.
+
+## Language split
+
+Code, identifiers, comments, commit messages, and the database all speak English. Everything a user reads is Spanish (es-CO). The single crossing point between those two worlds is `lib/labels.ts`.
+
+A Spanish string is never hardcoded inside a component. If it is, it will drift between two screens. Every user-facing string — button labels, status descriptions, empty states, error messages — is exported from `lib/labels.ts` and imported where it is needed.
+
+```typescript
+// ✅ correct: label lives in lib/labels.ts
+import { SITE_STATUS_LABEL } from "@/lib/labels";
+const label = SITE_STATUS_LABEL[site.status]; // "Disponible"
+
+// ❌ wrong: Spanish hardcoded in a component
+const label = "Disponible";
+```
+
+<CardGroup cols={2}>
+  <Card
+    title="Data Layer"
+    icon="database"
+    href="/architecture/data-layer"
+  >
+    The DTO → policy → DAL → actions pattern. Every entity follows the same four-file contract.
+  </Card>
+  <Card
+    title="Database Schema"
+    icon="table"
+    href="/architecture/database-schema"
+  >
+    11 PostgreSQL tables with PostGIS, RLS policies, security_invoker views, and proximity RPCs.
+  </Card>
+</CardGroup>

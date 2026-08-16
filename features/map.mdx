@@ -1,0 +1,150 @@
+---
+title: "Interactive Map: Pins, Clusters, and the Unified Panel"
+sidebarTitle: "The Map"
+description: "Manizales de Pie's core map uses MapLibre GL with custom HTML markers, pin clustering, fan layout for co-located points, and a unified panel with category chips."
+---
+
+The map is the product. Everything else in the codebase exists to put accurate, timely information onto it and get it into the hands of someone deciding where to go in the next three seconds.
+
+## Marker encoding
+
+Every pin on the map carries two simultaneous facts: **icon encodes entity type**, **color encodes status**. Crisis Cleanup settled on that split after years of real disasters — one color cannot say two things, and you need both at once.
+
+### Site type icons
+
+Defined in `lib/labels.ts` as `SITE_TYPE_ICON`:
+
+| Type | Icon | Label |
+|---|---|---|
+| `collection_point` | `Package` | Acopio |
+| `shelter` | `Tent` | Albergue |
+| `blood_donation` | `Droplet` | Sangre |
+| `medical_post` | `Cross` | Salud |
+| `census_point` | `ClipboardList` | Censo |
+
+`water_point` and `vet_clinic` exist in the Postgres enum but are deliberately not drawn — people already know where the vet is, and a water point without active curation is a promise the app cannot keep.
+
+### Status colors
+
+Defined in `lib/labels.ts` as `SITE_STATUS_MARKER`:
+
+| Status | Tailwind class | Meaning |
+|---|---|---|
+| `open` | `bg-resolved` | Disponible |
+| `full` | `bg-claimed` | Sin cupo |
+| `closed` | `bg-unclaimed` | No disponible |
+| `unknown` | `bg-stale` | Sin dato |
+
+The color axis is the one the eye reads first at map scale, before any icon resolves.
+
+### Confidence opacity
+
+Unconfirmed markers render at `opacity-55` (from `CONFIDENCE_MARKER` in `lib/labels.ts`). Faint is not hidden: an unconfirmed report is still the only warning anyone has, and it stays on the map. Once at least one person has confirmed a pin, the opacity resolves to full.
+
+## Clustering and fan layout
+
+The map uses **custom HTML marker grouping** — not MapLibre's built-in cluster layer, which renders circles and does not support HTML markers with icon + color encoding.
+
+### Fan layout for exact collisions
+
+When multiple points share the **identical longitude and latitude** (e.g., two resource offers pinned at the same barrio centroid, or two needs reported from the same doorway), zoom cannot separate them — one pin simply sits invisible beneath the other. `lib/marker-fan.ts` handles this with a pixel-offset fan:
+
+```ts
+// From lib/marker-fan.ts
+const RADIUS = 18; // CSS pixels — roughly one marker's width
+
+export function fanOutCollisions(groups: FannedPoint[][]): FanOffsets {
+  // Groups all four families (sites, work orders, animals, offers) in one pass
+  // so cross-family collisions are caught too
+}
+```
+
+Key design decisions:
+- **One pass over all families.** A need and a site can land on the same corner just as easily as two needs can. Per-family fans would leave that pair stacked.
+- **Sorted by id**, not by insertion order, so the arrangement is a property of the data — the same layout at every zoom, in every session, for every reader. Nothing re-shuffles.
+- **Pixel offset only.** Earlier iterations fanned whenever pins merely *looked* close on screen, moving a pin away from where the place actually is and reshuffling on every zoom. The fan now applies only to exact coordinate matches, where there is no honest position to draw.
+- **First pin points straight up** (`-Math.PI / 2`), then evenly around. Up because that is where a marker's tooltip already points, so the anchored pin reads as the one at the true spot.
+
+## The unified panel
+
+`app/(map)/_components/unified-panel.tsx` is the single filter surface for everything the map draws. A persistent row of five chips is always visible at the top of the panel:
+
+| Chip id | Label | Icon | What it lists |
+|---|---|---|---|
+| `all` | Todo | `LayoutList` | Two most urgent rows of every family |
+| `workOrders` | Necesidades | `Wrench` | Work orders (debris, structural risk, supplies…) |
+| `sites` | Sitios | `MapPin` | All aid sites with name/address search |
+| `pets` | Mascotas | `PawPrint` | Open animal cases |
+| `services` | Servicios | `Package` | Resource offers |
+
+Chips are defined in `lib/tabs.ts` as `PanelChip` and rendered in `UnifiedPanel` from the `chips` array. The **active chip is shared state** through `WorkspaceContext` so both the panel and the map's report button can jump to any chip directly.
+
+### Barrio filtering in the panel
+
+Clicking a barrio on the map passes the selection through context and **filters the panel list to that barrio only** — but the map continues to display all pins city-wide. Hiding the pins of other barrios would stop someone seeing that the nearest collection point is just across a boundary, which is exactly the information the map exists to provide.
+
+```tsx
+// From map-workspace.tsx — the panel filters, the map does not
+const panelSites = useMemo(
+  () =>
+    barrio ? mapSites.filter((site) => site.neighborhood === barrio.name) : mapSites,
+  [mapSites, barrio],
+);
+```
+
+### "Todo" as an index
+
+The `all` chip shows the **two most urgent rows of each family** sorted by urgency score (see `lib/urgency.ts`), then a "Ver N más" button that switches to that family's own chip. This ensures every family is visible even when one category dominates by count.
+
+## Map boundaries
+
+`maxBounds` in `map-workspace.tsx` keeps the camera inside a fixed bounding box:
+
+```ts
+const CITY_BOUNDS: [[number, number], [number, number]] = [
+  [-75.592, 4.983],
+  [-75.382, 5.144],
+];
+```
+
+This is the bounding box of all 114 official barrios (`public/barrios.geojson`) plus roughly **4.5 km of margin** on every side — enough that panning still feels free rather than hitting a wall, but not so loose that someone can scroll to another department. Villamaría's own point (`-75.512, 5.045`) already falls inside the barrios' bounding box, so the margin is breathing room, not a deliberate reach across the river.
+
+## Detail cards
+
+Tapping any pin opens a card. The card's **presentation adapts to screen width**:
+
+- **Below `lg` (1024 px):** the card is a **bottom drawer** that slides up from the map's lower edge. Opening the card on a phone also collapses the panel to its header bar, because the two cannot share the bottom half of the screen.
+- **At `lg` and above:** the card is an **anchored MapLibre popup** docked to the left edge of the map, beside the panel. A card opened from a shared link (`/punto/[id]`) opens in this position without requiring a click.
+
+The card (`MapCard` / `SitePopup`) shows:
+- Name, type badge, and status badge
+- Confirmation count and freshness label
+- Schedule, WhatsApp link, and address
+- **Confirmation buttons** — one-tap actions for `still_valid`, `changed`, or `no_longer_valid`
+- "Ver más" expands a detail sheet with description and source link
+
+<Note>
+The card steps aside automatically while a pin is being **relocated** — the relocation overlay owns the map surface for aiming, and the card would cover the ground the reader is trying to point at.
+</Note>
+
+## Realtime
+
+Map data updates via **Supabase Realtime subscriptions**. Only the field that actually churns rides the live channel: `status` (whether a place is open, full, or closed). Names, addresses, and item lists are served from the initial server render, because they barely move and a socket per row would cost battery for nothing.
+
+```ts
+// From map-workspace.tsx — useLiveSiteStatus
+const channel = supabase
+  .channel("site-status")
+  .on(
+    "postgres_changes",
+    { event: "UPDATE", schema: "public", table: "site" },
+    (payload) => {
+      const row = payload.new as { id?: string; status?: SiteStatus };
+      if (!row.id || !row.status) return;
+      setStatuses((prev) => ({ ...prev, [row.id!]: row.status! }));
+    },
+  )
+  .subscribe();
+```
+
+The connection goes **browser → Postgres directly**; RLS (Row Level Security) is the security boundary for realtime, not the DAL. The DAL handles write-path validation; the realtime channel is read-only and filtered by Postgres policies.

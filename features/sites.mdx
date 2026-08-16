@@ -1,0 +1,178 @@
+---
+title: "Aid Sites: Collection Points, Shelters, and Donation Centers"
+sidebarTitle: "Sites"
+description: "Aid sites are fixed locations on the map — shelters, collection points, blood donation centers, medical posts, and census points — with real-time status and confirmation."
+---
+
+Sites are the fixed-location entities on the map. Each one has a type that determines its icon and a status that determines its color — the two axes of information a volunteer reads before deciding where to go. The icon answers "what is this place?" and the color answers "can I act on it right now?" A reader scanning 40 pins across a city block needs both facts at once, and one color cannot carry two meanings.
+
+## Site types
+
+| Type | Spanish Label | Map Panel |
+|---|---|---|
+| `collection_point` | Acopio | Sites |
+| `shelter` | Albergue | Sites |
+| `blood_donation` | Sangre | Sites |
+| `medical_post` | Salud | Sites |
+| `census_point` | Censo | Sites |
+| `vet_clinic` | Veterinaria | Hidden (not drawn) |
+| `water_point` | Agua | Hidden (not drawn) |
+
+<Note>
+`vet_clinic` and `water_point` remain in the database enum but are not drawn on the map. Dropping a Postgres enum value requires recreating the type — the same reason the work order category `water` was retired to the comment layer rather than deleted. Any existing rows tagged with those types are not lost, but they will not appear as pins.
+</Note>
+
+`census_point` is the one type that serves the affected rather than the helper: it is where a displaced person registers to reach the census and the rent subsidy. The product normally stays on the helper's side; the census is the deliberate exception, because without the census registration there is no subsidy.
+
+## Site statuses
+
+The status is the color axis — the first thing the eye resolves at map scale, before any icon detail becomes legible.
+
+| Status | Spanish Label | Marker color |
+|---|---|---|
+| `open` | Disponible | Green (`bg-resolved`) |
+| `full` | Sin cupo | Amber (`bg-claimed`) |
+| `closed` | No disponible | Red (`bg-unclaimed`) |
+| `unknown` | Sin dato | Gray (`bg-stale`) |
+
+"Disponible" is used rather than "Abierto" because half of what this status covers is not a business — a family's living room taking in donations, a parish organizing a collection point in its atrium. "Disponible" asks the question that actually matters: "can I bring something right now?"
+
+## Site items
+
+A site can have associated `site_item` records attached to it. Each item carries:
+
+- **label** — a free-text description of the item (e.g., "Ropa usada", "Agua potable")
+- **item_mode** — one of `needed`, `not_accepted`, or `sufficient`
+- **priority** — an integer used to order items on the card
+
+The Spanish labels rendered in the UI are: `needed` → "Necesita", `not_accepted` → "NO recibe", `sufficient` → "Ya tiene suficiente". Example display: "Ropa usada — NO recibe" or "Agua potable — Necesita". Items let a collection point communicate exactly what it wants right now, so a volunteer driving across the city does not arrive with the wrong load.
+
+## SiteDTO fields
+
+These are the fields returned by `siteSchema` — the output contract between the data access layer and the client. No database column leaks through by accident; every field here is mapped explicitly.
+
+<ResponseField name="id" type="string (UUID)" required>
+  Unique identifier for the site.
+</ResponseField>
+
+<ResponseField name="type" type="SiteType" required>
+  One of `collection_point`, `shelter`, `blood_donation`, `vet_clinic`, `water_point`, `medical_post`, `census_point`. Determines the map icon.
+</ResponseField>
+
+<ResponseField name="name" type="string" required>
+  Human-readable name for the site, e.g. "Coliseo Menor" or "Sede comunal San José".
+</ResponseField>
+
+<ResponseField name="description" type="string | null">
+  Optional longer description of what the site does or needs.
+</ResponseField>
+
+<ResponseField name="address" type="string | null">
+  Street address or landmark reference. Nullable in the schema because older rows and MCP-loaded spreadsheets may not carry one; required by the public report form.
+</ResponseField>
+
+<ResponseField name="longitude" type="number" required>
+  WGS-84 longitude. Always within the Manizales/Villamaría scope bounds.
+</ResponseField>
+
+<ResponseField name="latitude" type="number" required>
+  WGS-84 latitude. Always within the Manizales/Villamaría scope bounds.
+</ResponseField>
+
+<ResponseField name="neighborhood" type="string | null">
+  Barrio name derived by PostGIS from the coordinate. Never written by the application — always read back from the trigger result.
+</ResponseField>
+
+<ResponseField name="status" type="SiteStatus" required>
+  One of `open`, `full`, `closed`, `unknown`. Drives the marker color.
+</ResponseField>
+
+<ResponseField name="schedule" type="string | null">
+  Free-text operating hours, e.g. "8 a. m. a 6 p. m." or "Abierto 24 horas".
+</ResponseField>
+
+<ResponseField name="whatsapp" type="string | null">
+  Contact number, digits only with country code. Visible on the card to anyone.
+</ResponseField>
+
+<ResponseField name="confirmedCount" type="number (integer ≥ 0)" required>
+  How many people have said "yes, this is still true". Drives opacity: a site with `confirmedCount > 0` renders at full opacity; unconfirmed renders at 55% opacity.
+</ResponseField>
+
+<ResponseField name="confirmedAt" type="string (ISO 8601 datetime with offset)" required>
+  Last time anyone confirmed the site. Drives the freshness label. A stale row is demoted on the map, never hidden.
+</ResponseField>
+
+<ResponseField name="expiresAt" type="string (ISO 8601 datetime with offset)" required>
+  When this row is considered expired for freshness purposes. Stale rows are demoted, not deleted.
+</ResponseField>
+
+<ResponseField name="items" type="SiteItem[]" required>
+  Array of associated item records. Each item has `id` (UUID), `label` (string), `mode` (`needed` | `not_accepted` | `sufficient`), and `priority` (integer).
+</ResponseField>
+
+<ResponseField name="published" type="boolean" required>
+  Whether the site is visible to the public. Only curators may toggle this. `listPublished` only returns hidden rows when the caller is a curator.
+</ResponseField>
+
+## Creating a site
+
+Anyone can propose a site — no account required. Curation, not registration, is the gate.
+
+<ParamField body="type" type="SiteType" required>
+  The kind of place. One of `collection_point`, `shelter`, `blood_donation`, `vet_clinic`, `water_point`, `medical_post`, `census_point`.
+</ParamField>
+
+<ParamField body="name" type="string" required>
+  Name of the place. Between 3 and 120 characters. Validation message: "Escribe un nombre reconocible".
+</ParamField>
+
+<ParamField body="description" type="string">
+  What the site does or needs. Maximum 1000 characters. Optional.
+</ParamField>
+
+<ParamField body="address" type="string" required>
+  Street reference, corner, or landmark. Between 5 and 200 characters. Required in the public form — this is what carries the precision the dragged pin used to. Validation message: "Escribe la cuadra, la esquina o un punto de referencia".
+</ParamField>
+
+<ParamField body="longitude" type="number" required>
+  WGS-84 longitude. Must be between `-76.2` and `-74.8`. Values outside this range are rejected with: "Este mapa solo cubre Manizales y Villamaría."
+</ParamField>
+
+<ParamField body="latitude" type="number" required>
+  WGS-84 latitude. Must be between `4.6` and `5.6`. Same out-of-area message applies.
+</ParamField>
+
+<ParamField body="schedule" type="string">
+  Free-text operating hours. Maximum 120 characters. Optional.
+</ParamField>
+
+<ParamField body="whatsapp" type="string">
+  Contact WhatsApp number. Digits only, 10–15 characters, with country code. Validation message: "Debe ser solo dígitos, con indicativo del país". Optional.
+</ParamField>
+
+The geographic bounds (`longitude` between -76.2 and -74.8; `latitude` between 4.6 and 5.6) enforce the Manizales/Villamaría scope at the schema level. A report from Pereira or Dosquebradas is rejected at the door with a message explaining why, rather than silently accepted into a queue nobody will work.
+
+## Confirmation
+
+Any person, without an account, can tap the one-tap confirmation button on a site card. The response carries one of two signals:
+
+- **`still_valid`** — increments `confirmed_count` by 1 and updates `confirmed_at`.
+- **`no_longer_valid`** — does **not** increment `confirmed_count`. Saying a place is gone is not evidence that it exists; only a person standing in front of an open site can confirm it.
+
+The confirmed count drives two visual outputs:
+
+- **Opacity** — `confirmedCount > 0` renders the marker at full opacity. An unconfirmed site renders at 55% opacity (`opacity-55`). Faint is not hidden: an unconfirmed report is still the only warning anyone has, and it stays on the map.
+- **Badge** — the card shows "N personas confirmaron" (or "Sin confirmar" for zero).
+
+No account is required by design. The person standing in front of the closed shelter, on someone else's phone, is the least likely to have signed in — and they are the only one who actually knows.
+
+## Relocation
+
+Any user can drag a site's pin within its current barrio. A curator can move a pin anywhere within the covered area (same longitude/latitude bounds as creating one).
+
+A site pin that has no assigned barrio — for example, a location in Villamaría where no neighborhood polygons exist — has no boundary, and anyone may move it anywhere within the covered area.
+
+The barrio (`neighborhood`) is always re-derived from the new coordinate by a PostGIS trigger after a relocation. The application never writes `neighborhood_id` directly; it is always a computed result of where the pin lands.
+
+Relocation is authorized on a separate axis from text edits: who may move a pin and how far is decided by where it *lands*, while the text fields (name, description, address, schedule, WhatsApp) are open to anyone anywhere.

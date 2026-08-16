@@ -1,7 +1,7 @@
 ---
-title: "Environment Variables for Manizales de Pie"
+title: "Configuring Environment Variables for Manizales de Pie"
 sidebarTitle: "Environment"
-description: "Configure Manizales de Pie with five environment variables split between public (browser-safe) and server-only (secret). Missing variables fail the build by design."
+description: "Configure Manizales de Pie with public Supabase credentials and a server-only secret key. All four required variables are validated by Zod at build time."
 ---
 
 All environment variables are validated at build time by `lib/env.ts` (public variables) and `lib/env.server.ts` (server-only secrets). Both use [Zod](https://zod.dev) to parse the values the moment the module loads. A missing or empty variable throws immediately with a descriptive error — failing the build rather than surfacing as a null pointer at 3 a.m. during an active emergency.
@@ -67,15 +67,25 @@ Server-only variables are never prefixed `NEXT_PUBLIC_`. They live in `lib/env.s
 The two modules enforce the public/server split at the import graph level:
 
 ```typescript lib/env.ts
-// Public — validated at module load, crashes loud if missing
-export const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-export const SUPABASE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+// Public — Zod-parsed at module load, crashes loud if missing or malformed
+const clientSchema = z.object({
+  NEXT_PUBLIC_SUPABASE_URL: z.url(),
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: z.string().min(1),
+  NEXT_PUBLIC_SITE_URL: z.url(),
+});
+
+export const clientEnv = clientSchema.parse({ /* process.env values */ });
 ```
 
 ```typescript lib/env.server.ts
 import "server-only";
-// Server — never reaches the browser bundle
-export const SUPABASE_SECRET_KEY = process.env.SUPABASE_SECRET_KEY!;
+// Server — never reaches the browser bundle; accidental client import → build error
+const serverSchema = z.object({
+  SUPABASE_SECRET_KEY: z.string().min(1),
+  NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
+});
+
+export const serverEnv = serverSchema.parse({ /* process.env values */ });
 ```
 
 `lib/env.ts` is safe to import anywhere — pages, components, the proxy, server actions. `lib/env.server.ts` may only be imported by server-side code in `lib/` and `data/`. The `server-only` package makes that boundary enforced rather than advisory.
@@ -103,4 +113,4 @@ NEXT_PUBLIC_CURATOR_WHATSAPP="573001234567"
 SUPABASE_SECRET_KEY="your-service-role-key"
 ```
 
-All five variable names are exactly as shown. The build fails fast with a Zod validation error if `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `NEXT_PUBLIC_SITE_URL`, or `SUPABASE_SECRET_KEY` is missing or empty. `NEXT_PUBLIC_CURATOR_WHATSAPP` is optional and the app will run without it.
+All four required variable names are exactly as shown. The build fails fast with a Zod validation error if `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, `NEXT_PUBLIC_SITE_URL`, or `SUPABASE_SECRET_KEY` is missing or empty. `NEXT_PUBLIC_CURATOR_WHATSAPP` is an optional extra variable not present in `.env.example` — the app runs without it, but it should be set before the deployment is shared publicly.

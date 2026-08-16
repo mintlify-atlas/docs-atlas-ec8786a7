@@ -1,7 +1,7 @@
 ---
 title: "Database Schema: Tables, Enums, and RLS Policies"
 sidebarTitle: "Database Schema"
-description: "Manizales de Pie uses 11 PostgreSQL tables with PostGIS, row-level security, security_invoker views, and proximity RPCs. Reference the full schema here."
+description: "Manizales de Pie uses 10 PostgreSQL tables with PostGIS, row-level security, security_invoker views, and proximity RPCs. Reference the full schema here."
 ---
 
 The database is the map. All coordinates are `geography(point, 4326)` columns managed by PostGIS. Row-level security (RLS) policies guard every table; `security_invoker` views ensure those policies apply even through view queries. The migration that creates the full schema is `supabase/migrations/20260813000000_init.sql`.
@@ -12,20 +12,21 @@ The database is the map. All coordinates are `geography(point, 4326)` columns ma
 
 ## Enums
 
-The schema defines ten PostgreSQL enum types. Enum values are never deleted once inserted — existing rows would fail validation — so the application layer is responsible for ignoring values that are no longer shown in the UI.
+The schema defines nine PostgreSQL enum types. Enum values are never deleted once inserted — existing rows would fail validation — so the application layer is responsible for ignoring values that are no longer shown in the UI.
 
 | Enum | Values |
 |---|---|
 | `user_role` | `visitor`, `contributor`, `curator` |
 | `municipality` | `manizales`, `villamaria` |
-| `site_type` | `collection_point`, `shelter`, `blood_donation`, `vet_clinic`, `water_point`, `medical_post`, `census_point` |
+| `site_type` | `collection_point`, `shelter`, `blood_donation`, `vet_clinic`, `water_point`, `medical_post`, `census_point`† |
 | `site_status` | `open`, `full`, `closed`, `unknown` |
 | `item_mode` | `needed`, `not_accepted`, `sufficient` |
-| `call_category` | `debris_removal`, `logistics`, `census`, `animals`, `health`, `structural_survey`, `other` |
 | `work_order_category` | `debris_removal`, `animal_rescue`, `structural_risk`, `supplies`, `water`, `other` |
-| `work_order_status` | `unclaimed`, `claimed`, `attended`, `closed_completed`, `closed_by_others`, `closed_rejected` |
-| `resource_type` | `dump_truck`, `pickup`, `tools`, `warehouse`, `free_transport`, `machinery`, `home_stay`, `other` |
+| `work_order_status` | `unclaimed`, `claimed`, `attended`†, `closed_completed`, `closed_by_others`, `closed_rejected` |
+| `resource_type` | `dump_truck`, `pickup`, `tools`, `warehouse`, `free_transport`, `machinery`, `home_stay`†, `other` |
 | `confirmation_result` | `still_valid`, `changed`, `no_longer_valid` |
+
+† Added in a later migration, not in `20260813000000_init.sql`: `census_point` in `20260814040000_site_type_census_point.sql`; `attended` in `20260815020000_work_order_update_kinds.sql`; `home_stay` in `20260814130000_resource_offer_public.sql`.
 
 The `item_mode` enum captures a three-way state for items at a site. The `not_accepted` value is the most operationally important: the Red Cross explicitly asks people not to donate used clothing, and that refusal has to be visible on the map card.
 
@@ -33,7 +34,7 @@ The `work_order_status` enum follows the Crisis Cleanup lifecycle. Closing reaso
 
 ## Tables
 
-The schema creates eleven tables. All writes to the mapped entities go through the server-side data layer using the service role; no direct `INSERT` or `UPDATE` policy is granted to `anon` or `authenticated` roles at the table level, which prevents a second, ungated write path from being opened accidentally.
+The schema creates ten tables. All writes to the mapped entities go through the server-side data layer using the service role; no direct `INSERT` or `UPDATE` policy is granted to `anon` or `authenticated` roles at the table level, which prevents a second, ungated write path from being opened accidentally.
 
 | Table | Description |
 |---|---|
@@ -41,25 +42,23 @@ The schema creates eleven tables. All writes to the mapped entities go through t
 | `neighborhood` | 114 official barrios of Manizales plus Villamaría with a centroid `geography` column. Sourced from the SIG Alcaldía de Manizales open data portal (Acuerdo Municipal 589 de 2004). |
 | `site` | Aid locations — shelters, collection points, blood donation centres, medical posts, census points. Carries `published`, `confirmed_at`, `expires_at`, and an optional `merged_into_id` for duplicate resolution. |
 | `site_item` | Items a site needs, refuses (`not_accepted`), or already has enough of. Each row has a `priority` for ordering and a unique constraint on `(site_id, label, mode)`. |
-| `volunteer_call` | Ephemeral volunteer gatherings with optional `slots_total`, `starts_at`, `ends_at`, and a `bring` field. Created by authenticated users only. |
 | `work_order` | Community needs (debris removal, structural risk, supplies) with an `approx_location` that is deliberately block-level, not exact. Status is derived by the `sync_work_order_state` trigger from the update thread. |
 | `work_order_update` | Append-only thread entries for a work order: `on_the_way`, `helped`, `still_needed`, `not_real`. The trigger reads these to derive `work_order.status`. |
 | `resource_offer` | Neighbour-offered resources: trucks, tools, home stays. Carries a `whatsapp` contact (required) and optional `available_from` / `available_until`. |
-| `animal` | Lost, found, or sighted animals with a photo URL, species, description, and contact. Markers use a dotted style to distinguish sightings from fixed locations. |
-| `closed_road` | Hand-curated road closures stored as both a `geography(linestring)` path and a `geography(point)` marker. The INVIAS API serves the road network only, not daily closures — those come from PDF bulletins, which is why this table exists. |
+| `animal_report` | Lost, found, or sighted animals with a photo URL, species, description, and contact. The location is the last-seen point (nullable) — a lost animal has no fixed location. |
 | `neighborhood_need` | Curator-declared per-barrio priority levels (`critical`, `high`, `normal`). Drives the `Frentes` panel layer when a curator has entered data. |
 
 <Tip>
-  The `confirmation` table is a single append-only log for all confirmable entities (`site`, `volunteer_call`, `work_order`, `resource_offer`, `closed_road`). It uses a loose reference (`entity` enum + `entity_id` UUID, no foreign key) instead of five separate confirmation tables. The live counter lives denormalized on each table's `confirmed_at` column, because the map reads it on every render.
+  The `confirmation` table is a single append-only log for all confirmable entities (`site`, `work_order`, `resource_offer`, `animal_report`). It uses a loose reference (`entity` enum + `entity_id` UUID, no foreign key) instead of separate confirmation tables per entity. The live counter lives denormalized on each table's `confirmed_at` column, because the map reads it on every render.
 </Tip>
 
 ## Key triggers
 
-**`set_neighborhood_from_location`** fires `BEFORE INSERT OR UPDATE` on `site`, `volunteer_call`, `work_order`, and `resource_offer`. It uses a PostGIS point-in-polygon query against the `neighborhood` table to stamp `neighborhood_id` automatically from the row's coordinate. The application never writes `neighborhood_id` directly — the trigger derives it, and it stays out of update payloads so the trigger cannot be bypassed by passing the old value.
+**`set_neighborhood_from_location`** fires `BEFORE INSERT OR UPDATE` on `site`, `work_order`, and `resource_offer`. It uses a PostGIS point-in-polygon query against the `neighborhood` table to stamp `neighborhood_id` automatically from the row's coordinate. The application never writes `neighborhood_id` directly — the trigger derives it, and it stays out of update payloads so the trigger cannot be bypassed by passing the old value.
 
 This trigger runs even when rows are loaded via direct database import (MCP spreadsheet loads), which is the reason the logic lives in the database rather than in the DAL.
 
-**`sync_work_order_state`** fires `AFTER INSERT` on `work_order_update`. It reads the full update thread for the work order and derives `work_order.status` from the entries. The application never sets `work_order.status` directly — if a feature ever needs to set it, it is the feature that is wrong. Closing a work order is exclusively a curator's action (`closed_completed`, `closed_by_others`, `closed_rejected`), and `sync_work_order_state` freezes every closed state against later entries.
+**`sync_work_order_state`** fires `AFTER INSERT OR DELETE` on `work_order_update`. It reads the full update thread for the work order and derives `work_order.status` from the entries. The application never sets `work_order.status` directly — if a feature ever needs to set it, it is the feature that is wrong. Closing a work order is exclusively a curator's action (`closed_completed`, `closed_by_others`, `closed_rejected`), and `sync_work_order_state` freezes every closed state against later entries.
 
 **`handle_new_user`** fires `AFTER INSERT` on `auth.users` and creates a matching `profile` row. It is declared `SECURITY DEFINER` so it runs with the function owner's rights rather than the triggering user's.
 
@@ -67,11 +66,11 @@ This trigger runs even when rows are loaded via direct database import (MCP spre
 
 Every table has RLS enabled. The security model has three tiers:
 
-1. **Public reads** — published rows on `site`, `volunteer_call`, `work_order`, `resource_offer`, and `closed_road` are readable by anyone (including anonymous visitors). The product's core value — finding a shelter — never requires an account.
+1. **Public reads** — published rows on `site`, `work_order`, `resource_offer`, and `animal_report` are readable by anyone (including anonymous visitors). The product's core value — finding a shelter — never requires an account.
 
 2. **Curator reads** — the `is_curator()` function (a `SECURITY DEFINER` SQL function that checks `profile.role`) is used in every read policy. A curator sees unpublished rows in addition to published ones, which is what makes the `published = false` toggle reversible without a direct database query.
 
-3. **Sensitive data** — `work_order_contact` holds exact addresses and phone numbers. It is never joined into a public view, never subscribed to by a realtime channel, and readable only by the profile that holds an active claim on the work order and by curators. Every read of this table is recorded in `work_order_access`.
+3. **Sensitive data** — contact details on `work_order` (exact address, contact name, phone) are projected into the public view and visible to anyone. The fields are optional and the report form warns that anything entered will be publicly visible.
 
 All inserts begin with `published = false` in seed data. The application itself publishes reports immediately (open publication policy), but the seed data is loaded unpublished on purpose: seed coordinates are approximate and unverified, and sending someone to the wrong shelter during an emergency is worse than having no pin at all.
 

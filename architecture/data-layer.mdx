@@ -1,7 +1,7 @@
 ---
 title: "Data Layer: DAL, DTO, Policy, and Actions Pattern"
 sidebarTitle: "Data Layer"
-description: "Every entity in Manizales de Pie follows a four-file pattern — DTO, policy, DAL, actions. Learn the contract each file holds and the mutation order that is never broken."
+description: "Every entity follows a four-file pattern: DTO, policy, DAL, actions. Learn the contract each file holds and the mutation order that is never broken."
 ---
 
 Every entity in the `data/` directory follows the same four-file pattern. `data/site/` is the reference implementation — when in doubt, copy its shape exactly. The order in which the files are created is not arbitrary: each file depends only on the ones before it, so starting in the wrong place means you are writing something you cannot yet test or authorize.

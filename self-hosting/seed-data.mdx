@@ -1,5 +1,5 @@
 ---
-title: "Seed Data: Loading Initial Aid Sites and Neighborhood Boundaries"
+title: "Seed Data: Loading Aid Sites and Neighborhood Boundaries"
 sidebarTitle: "Seed Data"
 description: "Manizales de Pie ships with seed SQL for known aid sites and scripts to load official neighborhood boundaries from Manizales's open GIS portal."
 ---
@@ -52,13 +52,11 @@ The script also reads any previously committed `public/barrios.geojson` as a spe
 
 ### scripts/seed-barrios.mjs
 
-Reads `public/barrios.geojson` and upserts rows into the `neighborhood` table, calling the `upsert_neighborhood` Postgres RPC for each feature. Each row carries:
+Reads `public/barrios.geojson` and upserts rows into the `neighborhood` table, calling the `upsert_neighborhood` Postgres RPC for each feature. The RPC receives three parameters per call:
 
-- `name` — the accented barrio name resolved by `fetch-barrios.mjs`
-- `municipality` — hardcoded to `manizales` (Villamaría has no equivalent published dataset)
-- `comuna` — the numeric commune identifier from the source layer
-- `centroid` — the area-weighted centroid of the largest polygon ring, precomputed by the fetch script
-- `boundary` — the full simplified polygon or MultiPolygon, stored as PostGIS `geography`
+- `p_name` — the accented barrio name resolved by `fetch-barrios.mjs`
+- `p_comuna` — the numeric commune identifier from the source layer
+- `p_geojson` — the full simplified polygon or MultiPolygon geometry as a GeoJSON string
 
 The script uses the service-role key from `.env.local` to bypass RLS. After inserting all barrios, it calls `backfill_neighborhoods` to re-stamp any `site` or `work_order` rows that were inserted before the boundary polygons existed.
 

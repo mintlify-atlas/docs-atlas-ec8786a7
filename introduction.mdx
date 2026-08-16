@@ -1,7 +1,7 @@
 ---
 title: "Manizales de Pie: Earthquake Relief Coordination Map"
 sidebarTitle: "Introduction"
-description: "Manizales de Pie is an open-source real-time map coordinating earthquake relief across Manizales and Villamaría, Colombia. Learn what it is, why it was built, and how it works."
+description: "Manizales de Pie is an open-source real-time map coordinating earthquake relief in Manizales and Villamaría, Colombia, built in August 2026."
 ---
 
 Manizales de Pie is a live, open-source coordination map built to answer a single question: **"¿dónde ayudo hoy?"** — where do I help today? It was created in the immediate aftermath of the magnitude 7.4 earthquake of August 10, 2026, which struck Manizales and Villamaría, Caldas, Colombia. In the hours and days that follow an urban earthquake, thousands of people want to help but cannot quickly find out where help is actually needed right now. Every component in this codebase exists to surface that answer within the first three seconds of opening the map.
@@ -47,7 +47,7 @@ A unified side panel groups all four types under filterable chips — **Todo**, 
 | Supabase (`@supabase/supabase-js`) | 2.112.3 |
 | Supabase SSR (`@supabase/ssr`) | 0.12.4 |
 | PostgreSQL + PostGIS | Supabase managed extension |
-| MapLibre GL | 5.x |
+| MapLibre GL | 5.24.0 |
 | Zod | 4.4.3 |
 | shadcn CLI | 4.18.0 |
 
@@ -74,7 +74,7 @@ The architecture follows a strict dependency rule enforced by ESLint: `app/` rou
   <Card title="Quickstart" icon="rocket" href="/quickstart">
     Stand up a local instance with Supabase, PostGIS, seed data, and Google Auth in under 15 minutes.
   </Card>
-  <Card title="Architecture Overview" icon="sitemap" href="/architecture">
+  <Card title="Architecture Overview" icon="sitemap" href="/architecture/overview">
     Understand the dependency rule, layer boundaries, data model, and the PostGIS schema.
   </Card>
 </CardGroup>

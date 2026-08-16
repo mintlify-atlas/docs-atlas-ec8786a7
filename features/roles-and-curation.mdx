@@ -1,7 +1,7 @@
 ---
 title: "Roles and Curation: Visitors, Contributors, and Curators"
 sidebarTitle: "Roles & Curation"
-description: "Three roles govern what actions are available in Manizales de Pie: visitor, contributor, and curator. Curators moderate content using the admin actions strip on every entity card."
+description: "Visitor, contributor, and curator are the three roles in Manizales de Pie. Curators moderate content via the admin actions strip on every entity card."
 ---
 
 Manizales de Pie has three roles stored in the `profile.role` column. Roles control which destructive actions — hiding, deleting, and closing work orders — are available on any given session. Authorization is enforced inside the DAL policy predicates and never assumed from the request origin: a server action is a public POST endpoint, and arriving through the app's own form is not a fact the server gets to take for granted.
@@ -38,10 +38,7 @@ export type CurrentUser = {
 
 When `isAdmin` is true (from `WorkspaceContext`), every entity card renders an additional strip below its content. The `AdminActions` component (`app/(map)/_components/admin-actions.tsx`) is shared across all entity types — sites, work orders, animals, resource offers — so a curator learns the controls once:
 
-<CardGroup cols={3}>
-  <Card title="Edit" icon="pencil">
-    Opens an inline edit form for the entity's text fields (name, description, address, schedule, WhatsApp). Fields differ per entity; the strip itself does not.
-  </Card>
+<CardGroup cols={2}>
   <Card title="Hide / Publish" icon="eye">
     Flips the `published` boolean. This is **reversible** — the row stays in the database, it simply stops appearing in public queries. A hidden row is shown to the curator with an amber strip so it is distinguishable while scrolling the map.
   </Card>
@@ -50,7 +47,7 @@ When `isAdmin` is true (from `WorkspaceContext`), every entity card renders an a
   </Card>
 </CardGroup>
 
-The strip's state and label copy all come from `ADMIN_LABEL` in `lib/labels.ts`. The vocabulary — edit, hide, publish, delete — is identical across all entity types by design.
+The strip's state and label copy all come from `ADMIN_LABEL` in `lib/labels.ts`. The vocabulary — hide, publish, delete — is identical across all entity types by design.
 
 ```tsx
 // app/(map)/_components/admin-actions.tsx (simplified)
@@ -133,7 +130,7 @@ There is no UI for role assignment. It is done directly in the database:
 UPDATE profile SET role = 'curator' WHERE id = '<uuid>';
 ```
 
-Only someone with direct database access can elevate a user to curator. The `20260814010000_bootstrap_curator.sql` migration shows the pattern for the first curator: it rewrites the `handle_new_user` trigger to assign `curator` to a specific email address at account-creation time. The address is in the repo by design — it grants nothing to whoever reads it, because the account still has to pass Google OAuth. What it does buy is an auditable answer to "who made themselves curator, and when."
+Only someone with direct database access can elevate a user to curator. The `20260814010000_bootstrap_curator.sql` migration shows the pattern for the first curator: it recreates the `handle_new_user` function (via `CREATE OR REPLACE`) to assign `curator` to a specific email address at account-creation time. The address is in the repo by design — it grants nothing to whoever reads it, because the account still has to pass Google OAuth. What it does buy is an auditable answer to "who made themselves curator, and when."
 
 ```sql
 -- supabase/migrations/20260814010000_bootstrap_curator.sql

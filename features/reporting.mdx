@@ -1,7 +1,7 @@
 ---
 title: "Reporting: Submit Sites, Needs, Animals, and Resources"
 sidebarTitle: "Reporting"
-description: "Anyone can report an aid site, community need, lost animal, or resource offer — no account required. Reports are published immediately and labeled as unconfirmed."
+description: "Report aid sites, needs, animals, or resource offers — no account required. Reports publish instantly, marked unconfirmed until confirmed by other users."
 ---
 
 Manizales de Pie uses an **open-publication model**: reports go live immediately and are labeled as unconfirmed. Curators moderate down (hiding spam); the community confirms accuracy by tapping the confirmation button on each card. This is the opposite of a gatekeeper model — holding a report back until a curator approves it makes the reviewer the bottleneck, and in a fast emergency information that arrives too late is the same as information that never arrived.
@@ -25,7 +25,7 @@ Manizales de Pie uses an **open-publication model**: reports go live immediately
 
 ## No account required
 
-Reporting never requires a Google account. The only action that requires sign-in is **creating a volunteer call (jornada)**, because it commits other people to a time and a place — from the moment the row exists, other people move their Saturday and hand their phone number to whoever organized it. The account wall appears at the end of the form (`PublishGate`), after the draft is complete, and the draft including the pin survives the trip through Google sign-in.
+Reporting never requires a Google account. Every form — sites, needs, animals, and resource offers — submits anonymously. The only actions that require a signed-in curator account are hiding, deleting, or closing a record.
 
 <Tip>
 "Yo puedo atender" on a work order also requires no account — just a name and WhatsApp (both optional). Multiple people can mark the same case as being attended; there is no exclusive claim that blocks anyone else.
@@ -71,7 +71,6 @@ The column in the database stays **nullable** so that existing rows without an a
 New reports are **published immediately** upon submission (`proposeSite` in `site.actions.ts`). They appear on the map at once, with:
 
 - `confirmed_count = 0`
-- `verified = false`
 - Status badge: "Sin confirmar"
 - Marker opacity: `opacity-55`
 

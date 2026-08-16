@@ -1,5 +1,5 @@
 ---
-title: "Deploying Manizales de Pie to Vercel"
+title: "Deploying Manizales de Pie to Vercel: Step-by-Step Guide"
 sidebarTitle: "Deployment"
 description: "Deploy Manizales de Pie to Vercel in minutes. Connect the repo, set environment variables, configure Supabase Auth redirect URLs, and go live."
 ---
@@ -69,7 +69,6 @@ npm run lint     # ESLint — enforces layer boundaries between app/, data/, and
 - **Supabase project URL** — `https://*.supabase.co` and `wss://*.supabase.co` for PostgREST API calls and Realtime subscriptions.
 - **CARTO basemap tiles** — `https://basemaps.cartocdn.com` and `https://*.basemaps.cartocdn.com` for the map background layer.
 - **Cloudflare Turnstile** — `https://challenges.cloudflare.com` for bot protection on the public report form, when Turnstile keys are configured.
-- **Google OAuth** — `https://accounts.google.com` is covered via the `frame-src` and `script-src` directives to support the Google sign-in flow.
 - **Geocoding and aftershock data** — `https://nominatim.openstreetmap.org`, `https://overpass-api.de`, and `https://datos.sgc.gov.co` are listed in `connect-src`.
 
 <Warning>

@@ -1,7 +1,7 @@
 ---
 title: "Aid Sites: Collection Points, Shelters, and Donation Centers"
 sidebarTitle: "Sites"
-description: "Aid sites are fixed locations on the map — shelters, collection points, blood donation centers, medical posts, and census points — with real-time status and confirmation."
+description: "Fixed map locations — shelters, collection points, blood donation, medical posts, and census points — with real-time status and crowd-sourced confirmation."
 ---
 
 Sites are the fixed-location entities on the map. Each one has a type that determines its icon and a status that determines its color — the two axes of information a volunteer reads before deciding where to go. The icon answers "what is this place?" and the color answers "can I act on it right now?" A reader scanning 40 pins across a city block needs both facts at once, and one color cannot carry two meanings.
@@ -42,7 +42,7 @@ The status is the color axis — the first thing the eye resolves at map scale, 
 A site can have associated `site_item` records attached to it. Each item carries:
 
 - **label** — a free-text description of the item (e.g., "Ropa usada", "Agua potable")
-- **item_mode** — one of `needed`, `not_accepted`, or `sufficient`
+- **mode** — one of `needed`, `not_accepted`, or `sufficient`
 - **priority** — an integer used to order items on the card
 
 The Spanish labels rendered in the UI are: `needed` → "Necesita", `not_accepted` → "NO recibe", `sufficient` → "Ya tiene suficiente". Example display: "Ropa usada — NO recibe" or "Agua potable — Necesita". Items let a collection point communicate exactly what it wants right now, so a volunteer driving across the city does not arrive with the wrong load.
